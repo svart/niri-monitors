@@ -1,0 +1,14 @@
+[Unit]
+Description=niri-monitors daemon
+Documentation=file:%h/.config/niri-monitors/config.toml
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/niri-monitorsd
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=graphical-session.target
