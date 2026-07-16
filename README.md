@@ -116,6 +116,15 @@ Agent-facing repository guidance is in `AGENTS.md`. When behavior and docs disag
 
 ## Development
 
+The `gui` feature is enabled by default, so existing build, run, test, and install commands continue to include both the daemon and GUI. When working only on daemon and core code, skip the GUI dependency graph with:
+
+```sh
+cargo build --no-default-features --bin niri-monitorsd
+cargo test --no-default-features --lib
+```
+
+The native GUI intentionally enables eframe's Wayland, OpenGL, default-font, and accessibility support. X11 and web-only support are excluded because `niri-monitors-gui` targets niri's native Wayland session.
+
 Before committing code or behavior changes, run:
 
 ```sh

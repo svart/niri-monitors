@@ -1,6 +1,7 @@
 pub mod config;
 pub mod control;
 pub mod daemon;
+#[cfg(feature = "gui")]
 pub mod gui;
 pub mod matching;
 pub mod model;
