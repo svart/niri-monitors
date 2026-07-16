@@ -947,7 +947,7 @@ impl eframe::App for GuiApp {
                 egui::Frame::new()
                     .fill(STRIP_BG)
                     .inner_margin(metrics.margin(12.0, 8.0))
-                    .stroke(Stroke::new(1.0, Color32::from_rgb(51, 54, 77))),
+                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(51, 54, 77))),
             )
             .show(ctx, |ui| self.show_status_bar(ui, metrics));
 
@@ -957,7 +957,7 @@ impl eframe::App for GuiApp {
                 egui::Frame::new()
                     .fill(STRIP_BG)
                     .inner_margin(metrics.margin(12.0, 8.0))
-                    .stroke(Stroke::new(1.0, Color32::from_rgb(51, 54, 77))),
+                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(51, 54, 77))),
             )
             .show(ctx, |ui| self.show_bottom_panel(ui, metrics));
 
@@ -1029,14 +1029,14 @@ fn toolbar_button(label: &'static str, metrics: GuiMetrics) -> egui::Button<'sta
     egui::Button::new(label)
         .min_size(metrics.button_min_size)
         .fill(BUTTON_BG)
-        .stroke(Stroke::new(1.0, BUTTON_STROKE))
+        .stroke(Stroke::new(1.0_f32, BUTTON_STROKE))
 }
 
 fn save_toolbar_button(metrics: GuiMetrics) -> egui::Button<'static> {
     egui::Button::new("Save")
         .min_size(metrics.button_min_size)
         .fill(BUTTON_BG)
-        .stroke(Stroke::new(1.0, BUTTON_STROKE))
+        .stroke(Stroke::new(1.0_f32, BUTTON_STROKE))
 }
 
 fn configs_are_dirty(config: Option<&Config>, original_config: Option<&Config>) -> bool {

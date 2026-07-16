@@ -357,7 +357,7 @@ fn draw_canvas(
                     &painter,
                     Pos2::new(x, canvas_rect.top()),
                     Pos2::new(x, canvas_rect.bottom()),
-                    Stroke::new(2.0, SNAP_STROKE),
+                    Stroke::new(2.0_f32, SNAP_STROKE),
                 );
             }
             SnapAxis::Horizontal => {
@@ -371,7 +371,7 @@ fn draw_canvas(
                     &painter,
                     Pos2::new(canvas_rect.left(), y),
                     Pos2::new(canvas_rect.right(), y),
-                    Stroke::new(2.0, SNAP_STROKE),
+                    Stroke::new(2.0_f32, SNAP_STROKE),
                 );
             }
         }
@@ -396,13 +396,13 @@ fn draw_canvas(
             Color32::from_rgb(28, 23, 17)
         };
         let stroke = if overlapping {
-            Stroke::new(2.0, Color32::from_rgb(230, 107, 73))
+            Stroke::new(2.0_f32, Color32::from_rgb(230, 107, 73))
         } else if selected {
-            Stroke::new(2.0, SELECTED_STROKE)
+            Stroke::new(2.0_f32, SELECTED_STROKE)
         } else if rect.connected {
-            Stroke::new(1.5, MONITOR_STROKE)
+            Stroke::new(1.5_f32, MONITOR_STROKE)
         } else {
-            Stroke::new(1.5, Color32::from_rgb(154, 111, 72))
+            Stroke::new(1.5_f32, Color32::from_rgb(154, 111, 72))
         };
 
         painter.rect_filled(screen_rect, 5.0, fill);
@@ -454,93 +454,6 @@ fn paint_output_label(painter: &egui::Painter, screen_rect: Rect, rect: &OutputR
         egui::FontId::proportional(size_size),
         Color32::from_rgb(214, 214, 220),
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::niri::output::{LogicalOutput, NiriMode};
-
-    #[test]
-    fn manual_layout_draft_tracks_changed_positions() {
-        let mut draft = ManualLayoutDraft::default();
-        draft.sync_from_outputs(&[output("DP-1", 0, 0)]);
-
-        assert!(!draft.has_changes());
-
-        draft.draft_positions[0] = Position { x: 120, y: 80 };
-
-        assert!(draft.has_changes());
-        assert_eq!(
-            draft.changed_positions(),
-            vec![("DP-1".to_string(), Position { x: 120, y: 80 })]
-        );
-    }
-
-    #[test]
-    fn manual_layout_draft_resets_when_live_position_matches_draft() {
-        let mut draft = ManualLayoutDraft::default();
-        draft.sync_from_outputs(&[output("DP-1", 0, 0)]);
-        draft.draft_positions[0] = Position { x: 120, y: 80 };
-
-        draft.sync_from_outputs(&[output("DP-1", 120, 80)]);
-
-        assert!(!draft.has_changes());
-        assert!(draft.changed_positions().is_empty());
-    }
-
-    #[test]
-    fn manual_layout_draft_reports_overlap_message() {
-        let mut draft = ManualLayoutDraft::default();
-        draft.sync_from_outputs(&[output("DP-1", 0, 0), output("DP-2", 4_000, 0)]);
-        draft.draft_positions[1] = Position { x: 10, y: 10 };
-
-        assert_eq!(
-            draft.first_overlap_message(&[output("DP-1", 0, 0), output("DP-2", 4_000, 0)]),
-            Some("DP-1 overlaps DP-2".to_string())
-        );
-    }
-
-    #[test]
-    fn manual_layout_apply_positions_are_normalized() {
-        let mut draft = ManualLayoutDraft::default();
-        let outputs = [output("DP-1", 0, 0), output("DP-2", 4_000, 0)];
-        draft.sync_from_outputs(&outputs);
-        draft.draft_positions[0] = Position { x: -100, y: -50 };
-        draft.draft_positions[1] = Position { x: 3_340, y: -50 };
-
-        assert_eq!(
-            draft.normalized_changed_positions(&outputs),
-            vec![("DP-2".to_string(), Position { x: 3_440, y: 0 })]
-        );
-    }
-
-    fn output(connector: &str, x: i32, y: i32) -> NiriOutput {
-        NiriOutput {
-            connector: connector.to_string(),
-            make: "Dell Inc.".to_string(),
-            model: "DELL U3419W".to_string(),
-            serial: Some("7VK66T2".to_string()),
-            description: "Dell Inc. DELL U3419W 7VK66T2".to_string(),
-            modes: vec![NiriMode {
-                width: 3440,
-                height: 1440,
-                refresh_millihz: 59973,
-                is_preferred: true,
-            }],
-            current_mode: Some(0),
-            logical: Some(LogicalOutput {
-                x,
-                y,
-                width: 3440,
-                height: 1440,
-                scale: 1.0,
-                transform: "normal".to_string(),
-            }),
-            vrr_supported: true,
-            vrr_enabled: false,
-        }
-    }
 }
 
 fn hit_test(
@@ -618,5 +531,91 @@ impl ViewBox {
         (canvas_rect.width() / self.width)
             .min(canvas_rect.height() / self.height)
             .max(0.001)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::niri::output::{LogicalOutput, NiriMode};
+
+    #[test]
+    fn manual_layout_draft_tracks_changed_positions() {
+        let mut draft = ManualLayoutDraft::default();
+        draft.sync_from_outputs(&[output("DP-1", 0, 0)]);
+        assert!(!draft.has_changes());
+
+        draft.draft_positions[0] = Position { x: 120, y: 80 };
+
+        assert!(draft.has_changes());
+        assert_eq!(
+            draft.changed_positions(),
+            vec![("DP-1".to_string(), Position { x: 120, y: 80 })]
+        );
+    }
+
+    #[test]
+    fn manual_layout_draft_resets_when_live_position_matches_draft() {
+        let mut draft = ManualLayoutDraft::default();
+        draft.sync_from_outputs(&[output("DP-1", 0, 0)]);
+        draft.draft_positions[0] = Position { x: 120, y: 80 };
+
+        draft.sync_from_outputs(&[output("DP-1", 120, 80)]);
+
+        assert!(!draft.has_changes());
+        assert!(draft.changed_positions().is_empty());
+    }
+
+    #[test]
+    fn manual_layout_draft_reports_overlap_message() {
+        let mut draft = ManualLayoutDraft::default();
+        draft.sync_from_outputs(&[output("DP-1", 0, 0), output("DP-2", 4_000, 0)]);
+        draft.draft_positions[1] = Position { x: 10, y: 10 };
+
+        assert_eq!(
+            draft.first_overlap_message(&[output("DP-1", 0, 0), output("DP-2", 4_000, 0)]),
+            Some("DP-1 overlaps DP-2".to_string())
+        );
+    }
+
+    #[test]
+    fn manual_layout_apply_positions_are_normalized() {
+        let mut draft = ManualLayoutDraft::default();
+        let outputs = [output("DP-1", 0, 0), output("DP-2", 4_000, 0)];
+        draft.sync_from_outputs(&outputs);
+        draft.draft_positions[0] = Position { x: -100, y: -50 };
+        draft.draft_positions[1] = Position { x: 3_340, y: -50 };
+
+        assert_eq!(
+            draft.normalized_changed_positions(&outputs),
+            vec![("DP-2".to_string(), Position { x: 3_440, y: 0 })]
+        );
+    }
+
+    fn output(connector: &str, x: i32, y: i32) -> NiriOutput {
+        NiriOutput {
+            connector: connector.to_string(),
+            make: "Dell Inc.".to_string(),
+            model: "DELL U3419W".to_string(),
+            serial: Some("7VK66T2".to_string()),
+            description: "Dell Inc. DELL U3419W 7VK66T2".to_string(),
+            modes: vec![NiriMode {
+                width: 3440,
+                height: 1440,
+                refresh_millihz: 59973,
+                is_preferred: true,
+            }],
+            current_mode: Some(0),
+            logical: Some(LogicalOutput {
+                x,
+                y,
+                width: 3440,
+                height: 1440,
+                scale: 1.0,
+                transform: "normal".to_string(),
+            }),
+            vrr_supported: true,
+            vrr_enabled: false,
+        }
     }
 }
