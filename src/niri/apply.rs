@@ -1,12 +1,10 @@
 use crate::matching::matcher_matches_output;
-use crate::model::{
-    Config, ManualOutputPlacement, ModeSpec, Position, Profile, ProfileOutput, Transform,
-};
+use crate::model::{Config, ManualOutputPlacement, ModeSpec, Position, Profile, ProfileOutput};
 use crate::niri::ipc::{NiriClient, NiriError, OutputAction};
-use crate::niri::output::{NiriMode, NiriOutput};
+use crate::niri::output::NiriOutput;
 use crate::placement::{
-    OutputRect, first_overlap_message, logical_size, normalize_output_rect_positions,
-    placed_output_rect,
+    OutputRect, SCALE_TOLERANCE, configured_size, first_overlap_message,
+    normalize_output_rect_positions, placed_output_rect,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -137,10 +135,6 @@ pub fn format_dry_run(plan: &ApplyPlan) -> String {
     lines.join("\n")
 }
 
-// niri may round a fractional scale to a nearby multiple of 1/120, so the reported
-// scale can differ slightly from the configured one. Within half a step counts as applied.
-const SCALE_TOLERANCE: f64 = 1.0 / 240.0;
-
 /// Where an output that is enabled after the plan ends up. A `None` position means niri
 /// places the output itself; a `None` size means it is only known once niri applies it.
 #[derive(Debug, Clone, Copy)]
@@ -227,7 +221,6 @@ pub fn build_apply_plan(
             enable_actions.push(planned(output_name.clone(), OutputAction::Enable));
         }
 
-        let mut resized = false;
         if let Some(mode) = profile_output.mode {
             if !output.modes.iter().any(|available| available.matches(mode)) {
                 return Err(ApplyPlanError::UnavailableMode {
@@ -236,7 +229,10 @@ pub fn build_apply_plan(
                     mode,
                 });
             }
-            if !current_mode(output).is_some_and(|current_mode| current_mode.matches(mode)) {
+            if !output
+                .active_mode()
+                .is_some_and(|current_mode| current_mode.matches(mode))
+            {
                 mode_actions.push(planned(
                     output_name.clone(),
                     OutputAction::Mode {
@@ -245,7 +241,6 @@ pub fn build_apply_plan(
                         refresh_millihz: mode.refresh_millihz,
                     },
                 ));
-                resized = true;
             }
         }
 
@@ -253,7 +248,6 @@ pub fn build_apply_plan(
             && !current.is_some_and(|logical| (logical.scale - scale).abs() < SCALE_TOLERANCE)
         {
             scale_actions.push(planned(output_name.clone(), OutputAction::Scale(scale)));
-            resized = true;
         }
 
         if let Some(transform) = profile_output.transform
@@ -263,7 +257,6 @@ pub fn build_apply_plan(
                 output_name.clone(),
                 OutputAction::Transform(transform),
             ));
-            resized = true;
         }
 
         if let Some(vrr) = profile_output.vrr
@@ -277,11 +270,7 @@ pub fn build_apply_plan(
             position: profile_output
                 .position
                 .or(current_placement.and_then(|placement| placement.position)),
-            size: if resized {
-                target_size(output, profile_output)
-            } else {
-                current_placement.and_then(|placement| placement.size)
-            },
+            size: configured_size(output, profile_output),
         });
     }
 
@@ -322,37 +311,6 @@ pub fn build_apply_plan(
         actions,
         warnings,
     })
-}
-
-fn current_mode(output: &NiriOutput) -> Option<&NiriMode> {
-    output
-        .current_mode
-        .filter(|_| output.logical.is_some())
-        .and_then(|index| output.modes.get(index))
-}
-
-/// Logical size `output` gets from the profile's mode, scale, and transform, falling back
-/// to its current settings. `None` when the mode or the scale is unknown, which happens
-/// when the profile enables an output without configuring both.
-fn target_size(output: &NiriOutput, profile_output: &ProfileOutput) -> Option<(u32, u32)> {
-    let current = output.logical.as_ref();
-    let (width, height) = match profile_output.mode {
-        Some(mode) => (mode.width, mode.height),
-        None => current_mode(output).map(|mode| (mode.width, mode.height))?,
-    };
-    let scale = profile_output
-        .scale
-        .or(current.map(|logical| logical.scale))?;
-    let transform = profile_output
-        .transform
-        .or(current.map(|logical| logical.transform))
-        .unwrap_or(Transform::Normal);
-    Some(logical_size(
-        u32::from(width),
-        u32::from(height),
-        scale,
-        transform,
-    ))
 }
 
 /// Builds the position actions that move enabled outputs to `placements`.
@@ -505,8 +463,9 @@ fn describe_output_action(action: &OutputAction) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Transform;
     use crate::model::{DaemonConfig, MonitorMatcher, Position, ProfileCondition};
-    use crate::niri::output::LogicalOutput;
+    use crate::niri::output::{LogicalOutput, NiriMode};
 
     #[test]
     fn builds_apply_plan_in_safe_order() {

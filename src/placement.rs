@@ -5,6 +5,10 @@ use crate::niri::output::NiriOutput;
 const FALLBACK_WIDTH: u32 = 1920;
 const FALLBACK_HEIGHT: u32 = 1080;
 
+// niri may round a fractional scale to a nearby multiple of 1/120, so the reported
+// scale can differ slightly from the configured one. Within half a step counts as applied.
+pub const SCALE_TOLERANCE: f64 = 1.0 / 240.0;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutputRect {
     pub output_index: usize,
@@ -88,6 +92,47 @@ pub fn placed_output_rect(
         connected: true,
         label: output_label(output),
     }
+}
+
+/// Logical size `output` has once `profile_output` is applied. Settings the profile leaves
+/// out keep their current values, and when nothing that affects the size changes, the size
+/// niri reports is used as is. `None` when the mode or the scale is unknown, which happens
+/// for an output that is off and whose profile entry does not set both.
+pub fn configured_size(output: &NiriOutput, profile_output: &ProfileOutput) -> Option<(u32, u32)> {
+    let current = output.logical.as_ref();
+    let current_mode = output.active_mode();
+
+    if let Some(logical) = current
+        && profile_output
+            .mode
+            .is_none_or(|mode| current_mode.is_some_and(|current| current.matches(mode)))
+        && profile_output
+            .scale
+            .is_none_or(|scale| (logical.scale - scale).abs() < SCALE_TOLERANCE)
+        && profile_output
+            .transform
+            .is_none_or(|transform| logical.transform == transform)
+    {
+        return Some((logical.width, logical.height));
+    }
+
+    let (width, height) = match profile_output.mode {
+        Some(mode) => (mode.width, mode.height),
+        None => current_mode.map(|mode| (mode.width, mode.height))?,
+    };
+    let scale = profile_output
+        .scale
+        .or(current.map(|logical| logical.scale))?;
+    let transform = profile_output
+        .transform
+        .or(current.map(|logical| logical.transform))
+        .unwrap_or(Transform::Normal);
+    Some(logical_size(
+        u32::from(width),
+        u32::from(height),
+        scale,
+        transform,
+    ))
 }
 
 /// Logical size of an output showing a `width`x`height` mode at `scale` and `transform`.
@@ -271,30 +316,32 @@ fn matcher_label(matcher: &crate::model::MonitorMatcher, output_index: usize) ->
 }
 
 fn output_size(output: &ProfileOutput, connected_output: Option<&NiriOutput>) -> (u32, u32) {
-    if let Some(logical) =
-        connected_output.and_then(|connected_output| connected_output.logical.as_ref())
+    if let Some(size) =
+        connected_output.and_then(|connected_output| configured_size(connected_output, output))
     {
-        return (logical.width, logical.height);
+        return size;
     }
 
-    let scale = output.scale.filter(|scale| *scale > 0.0).unwrap_or(1.0);
-    if let Some((width, height)) = connected_output
-        .and_then(|connected_output| {
-            connected_output
-                .current_mode
-                .and_then(|index| connected_output.modes.get(index))
-        })
-        .map(|mode| (u32::from(mode.width), u32::from(mode.height)))
+    // Off or not connected: estimate from the profile and the output's preferred mode.
+    let mode = output
+        .mode
+        .map(|mode| (mode.width, mode.height))
         .or_else(|| {
-            output
-                .mode
-                .map(|mode| (u32::from(mode.width), u32::from(mode.height)))
-        })
-    {
-        return scale_size(width, height, scale);
+            connected_output
+                .and_then(|connected_output| {
+                    connected_output.modes.iter().find(|mode| mode.is_preferred)
+                })
+                .map(|mode| (mode.width, mode.height))
+        });
+    match mode {
+        Some((width, height)) => logical_size(
+            u32::from(width),
+            u32::from(height),
+            output.scale.filter(|scale| *scale > 0.0).unwrap_or(1.0),
+            output.transform.unwrap_or(Transform::Normal),
+        ),
+        None => (FALLBACK_WIDTH, FALLBACK_HEIGHT),
     }
-
-    (FALLBACK_WIDTH, FALLBACK_HEIGHT)
 }
 
 fn scale_size(width: u32, height: u32, scale: f64) -> (u32, u32) {
@@ -364,6 +411,23 @@ mod tests {
         assert_eq!(rects[0].width, 2560);
         assert_eq!(rects[0].height, 1440);
         assert!(rects[0].connected);
+    }
+
+    #[test]
+    fn derives_rect_from_profile_scale_when_it_differs_from_live() {
+        let profile = profile_with_output(ProfileOutput {
+            matcher: matcher("Dell Display"),
+            enabled: Some(true),
+            mode: None,
+            scale: Some(2.0),
+            transform: Some(Transform::Rotate90),
+            position: None,
+            vrr: None,
+        });
+
+        let rects = derive_output_rects(&profile, &[connected_output("Dell Display", 0, 0)]);
+
+        assert_eq!((rects[0].width, rects[0].height), (1080, 1920));
     }
 
     #[test]

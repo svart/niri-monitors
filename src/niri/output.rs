@@ -18,6 +18,29 @@ pub struct NiriOutput {
     pub vrr_enabled: bool,
 }
 
+impl NiriOutput {
+    /// The mode the output shows now; `None` while it is off.
+    pub fn active_mode(&self) -> Option<&NiriMode> {
+        self.current_mode
+            .filter(|_| self.logical.is_some())
+            .and_then(|index| self.modes.get(index))
+    }
+
+    /// Make and model, for people to read. `description` keeps niri's `Unknown` serial
+    /// placeholder because matchers compare against it.
+    pub fn display_name(&self) -> String {
+        let known: Vec<&str> = [self.make.as_str(), self.model.as_str()]
+            .into_iter()
+            .filter(|part| *part != "Unknown")
+            .collect();
+        if known.is_empty() {
+            self.connector.clone()
+        } else {
+            known.join(" ")
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NiriMode {
     pub width: u16,
@@ -274,6 +297,16 @@ mod tests {
 
         assert_eq!(outputs[1].current_mode, None);
         assert_eq!(outputs[1].logical, None);
+    }
+
+    #[test]
+    fn display_name_leaves_out_unknown_parts() {
+        let mut outputs = parse_fixture();
+        assert_eq!(outputs[1].display_name(), "Lenovo Group Limited 0x40A9");
+
+        outputs[1].make = "Unknown".to_string();
+        outputs[1].model = "Unknown".to_string();
+        assert_eq!(outputs[1].display_name(), "HDMI-A-1");
     }
 
     #[test]
