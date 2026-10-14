@@ -1243,7 +1243,7 @@ mod tests {
         ) -> Result<(), NiriError> {
             self.actions.push((output.to_string(), action));
             if self.fail_at == Some(self.actions.len() - 1) {
-                return Err(NiriError::CommandFailed("boom".to_string()));
+                return Err(NiriError::NiriReply("boom".to_string()));
             }
 
             Ok(())

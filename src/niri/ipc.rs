@@ -1,27 +1,18 @@
 use crate::model::Position;
-use crate::niri::output::{
-    NiriOutput, NiriOutputParseError, parse_outputs_json, parse_outputs_response_json,
-};
+use crate::niri::output::{NiriOutput, NiriOutputParseError, parse_outputs_response_json};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::env;
 use std::io::{BufRead, BufReader, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 use thiserror::Error;
 
 pub trait NiriClient {
     fn outputs(&mut self) -> Result<Vec<NiriOutput>, NiriError>;
 
-    fn apply_output_action(
-        &mut self,
-        _output: &str,
-        action: OutputAction,
-    ) -> Result<(), NiriError> {
-        Err(NiriError::UnsupportedAction(action))
-    }
+    fn apply_output_action(&mut self, output: &str, action: OutputAction) -> Result<(), NiriError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -59,12 +50,6 @@ pub enum NiriError {
     NiriReply(String),
     #[error("failed to parse niri outputs: {0}")]
     ParseOutputs(#[from] NiriOutputParseError),
-    #[error("failed to run niri msg: {0}")]
-    CommandIo(std::io::Error),
-    #[error("niri msg failed: {0}")]
-    CommandFailed(String),
-    #[error("output action execution is not implemented yet: {0:?}")]
-    UnsupportedAction(OutputAction),
 }
 
 #[derive(Debug, Clone)]
@@ -110,43 +95,6 @@ impl NiriClient for SocketNiriClient {
     fn apply_output_action(&mut self, output: &str, action: OutputAction) -> Result<(), NiriError> {
         let response = self.request(output_action_request(output, &action))?;
         parse_ok_response(&response)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct CommandNiriClient {
-    program: PathBuf,
-}
-
-impl CommandNiriClient {
-    pub fn new(program: impl AsRef<Path>) -> Self {
-        Self {
-            program: program.as_ref().to_path_buf(),
-        }
-    }
-}
-
-impl Default for CommandNiriClient {
-    fn default() -> Self {
-        Self::new("niri")
-    }
-}
-
-impl NiriClient for CommandNiriClient {
-    fn outputs(&mut self) -> Result<Vec<NiriOutput>, NiriError> {
-        let output = Command::new(&self.program)
-            .args(["msg", "--json", "outputs"])
-            .output()
-            .map_err(NiriError::CommandIo)?;
-
-        if !output.status.success() {
-            return Err(NiriError::CommandFailed(
-                String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            ));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        parse_outputs_json(&stdout).map_err(NiriError::from)
     }
 }
 

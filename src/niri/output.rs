@@ -51,11 +51,6 @@ pub enum NiriOutputParseError {
     MissingOutputs,
 }
 
-pub fn parse_outputs_json(contents: &str) -> Result<Vec<NiriOutput>, NiriOutputParseError> {
-    let value: Value = serde_json::from_str(contents)?;
-    parse_outputs_value(value)
-}
-
 pub fn parse_outputs_response_json(
     contents: &str,
 ) -> Result<Vec<NiriOutput>, NiriOutputParseError> {
@@ -240,9 +235,14 @@ mod tests {
 }
 "#;
 
+    fn parse_fixture() -> Vec<NiriOutput> {
+        let response = format!(r#"{{"Ok":{{"Outputs":{OUTPUTS_JSON}}}}}"#);
+        parse_outputs_response_json(&response).expect("outputs should parse")
+    }
+
     #[test]
     fn parses_reference_output_fixture() {
-        let outputs = parse_outputs_json(OUTPUTS_JSON).expect("outputs should parse");
+        let outputs = parse_fixture();
 
         assert_eq!(outputs.len(), 2);
         assert_eq!(outputs[0].connector, "DP-1");
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn missing_serial_becomes_unknown_in_description() {
-        let outputs = parse_outputs_json(OUTPUTS_JSON).expect("outputs should parse");
+        let outputs = parse_fixture();
 
         assert_eq!(outputs[1].serial, None);
         assert_eq!(
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn disabled_outputs_have_no_logical_data() {
-        let outputs = parse_outputs_json(OUTPUTS_JSON).expect("outputs should parse");
+        let outputs = parse_fixture();
 
         assert_eq!(outputs[1].current_mode, None);
         assert_eq!(outputs[1].logical, None);

@@ -58,6 +58,7 @@ The interface adapts to window size: large windows use taller strips, larger tex
 - With no profiles configured, dragging monitors edits a runtime-only live layout draft. `Apply Changes` applies changed positions through the daemon when it is running, otherwise directly through niri IPC.
 - `Reset Draft` discards unapplied live-layout drag changes.
 - Overlapping monitor rectangles are highlighted. Save is blocked until config validation passes.
+- The GUI does not edit profile conditions, priority, or the profile `enabled` flag. Edit those in the TOML file; see `docs/config.md`.
 
 ## Profile Actions
 

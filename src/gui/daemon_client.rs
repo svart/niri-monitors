@@ -74,16 +74,8 @@ impl DaemonClient {
         self.request(ControlRequest::ReloadConfig)
     }
 
-    pub fn dry_run_profile(&self, profile_id: String) -> Result<PreviewData, DaemonClientError> {
-        self.request(ControlRequest::DryRunProfile { profile_id })
-    }
-
     pub fn preview_profile(&self, profile_id: String) -> Result<PreviewData, DaemonClientError> {
         self.request(ControlRequest::PreviewProfile { profile_id })
-    }
-
-    pub fn activate_profile(&self, profile_id: String) -> Result<StatusData, DaemonClientError> {
-        self.request(ControlRequest::ActivateProfile { profile_id })
     }
 
     pub fn apply_manual_layout(
@@ -91,14 +83,6 @@ impl DaemonClient {
         placements: Vec<ManualOutputPlacement>,
     ) -> Result<StatusData, DaemonClientError> {
         self.request(ControlRequest::ApplyManualLayout { placements })
-    }
-
-    pub fn set_auto_mode(&self, enabled: bool) -> Result<StatusData, DaemonClientError> {
-        self.request(ControlRequest::SetAutoMode { enabled })
-    }
-
-    pub fn clear_manual_profile(&self) -> Result<StatusData, DaemonClientError> {
-        self.request(ControlRequest::ClearManualProfile)
     }
 
     fn request<T>(&self, request: ControlRequest) -> Result<T, DaemonClientError>

@@ -1,4 +1,4 @@
-use niri_monitors::gui::app::GuiApp;
+use niri_monitors::GuiApp;
 
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {

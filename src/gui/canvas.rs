@@ -82,17 +82,6 @@ impl ManualLayoutDraft {
         self.draft_positions = self.current_positions.clone();
     }
 
-    pub fn changed_positions(&self) -> Vec<(String, Position)> {
-        self.output_keys
-            .iter()
-            .zip(self.current_positions.iter())
-            .zip(self.draft_positions.iter())
-            .filter_map(|((output, current), draft)| {
-                (current != draft).then_some((output.clone(), *draft))
-            })
-            .collect()
-    }
-
     pub fn normalized_changed_positions(&self, outputs: &[NiriOutput]) -> Vec<(String, Position)> {
         let mut rects = self.draft_rects(outputs);
         normalize_output_rect_positions(&mut rects);
@@ -312,27 +301,6 @@ pub fn show_editable_live_monitor_canvas(
     changed
 }
 
-pub fn show_live_monitor_canvas(ui: &mut egui::Ui, outputs: &[NiriOutput]) {
-    let rects = derive_connected_output_rects(outputs);
-    if rects.is_empty() {
-        if outputs.is_empty() {
-            ui.label("No connected outputs reported by daemon.");
-        } else {
-            ui.label("No enabled outputs have logical positions to display.");
-        }
-        return;
-    }
-
-    let available_width = ui.available_width().max(320.0);
-    let available_height = ui.available_height().max(320.0);
-    let desired_size = Vec2::new(available_width, available_height);
-    let (canvas_rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
-    let view = ViewBox::from_rects(&rects);
-    let state = CanvasState::default();
-
-    draw_canvas(ui, canvas_rect, view, &rects, &state);
-}
-
 fn draw_canvas(
     ui: &egui::Ui,
     canvas_rect: Rect,
@@ -548,10 +516,8 @@ mod tests {
         draft.draft_positions[0] = Position { x: 120, y: 80 };
 
         assert!(draft.has_changes());
-        assert_eq!(
-            draft.changed_positions(),
-            vec![("DP-1".to_string(), Position { x: 120, y: 80 })]
-        );
+        let rects = draft.draft_rects(&[output("DP-1", 0, 0)]);
+        assert_eq!((rects[0].x, rects[0].y), (120, 80));
     }
 
     #[test]
@@ -563,7 +529,6 @@ mod tests {
         draft.sync_from_outputs(&[output("DP-1", 120, 80)]);
 
         assert!(!draft.has_changes());
-        assert!(draft.changed_positions().is_empty());
     }
 
     #[test]

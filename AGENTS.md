@@ -23,12 +23,11 @@ src/
     app.rs                # Main eframe app state and update loop
     canvas.rs             # Monitor placement canvas
     daemon_client.rs      # Control socket client used by the GUI
-    output_editor.rs      # Per-output settings strip/panel
-    profile_editor.rs     # Condition editor and matcher diagnostics helpers
-    profile_list.rs       # Profile creation, duplication, deletion defaults
+    output_editor.rs      # Selected-output settings strip
+    profile_list.rs       # Profile creation and deletion defaults
   niri/
     mod.rs
-    ipc.rs                # Niri IPC client trait and implementations
+    ipc.rs                # Niri IPC client trait and socket client
     output.rs             # Niri output JSON parsing and normalization
     apply.rs              # Apply plan construction, validation, execution, dry-run output
   bin/

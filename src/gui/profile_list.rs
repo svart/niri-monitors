@@ -21,13 +21,6 @@ pub fn build_new_profile(existing: &[Profile], connected_outputs: &[NiriOutput])
     }
 }
 
-pub fn duplicate_profile(existing: &[Profile], source: &Profile) -> Profile {
-    let mut duplicated = source.clone();
-    duplicated.id = unique_profile_id(existing, &format!("{} Copy", source.id));
-    duplicated.name = unique_profile_name(existing, &format!("{} Copy", source.name));
-    duplicated
-}
-
 pub fn remove_profile(profiles: &mut Vec<Profile>, profile_id: &str) -> bool {
     let Some(index) = profiles.iter().position(|profile| profile.id == profile_id) else {
         return false;
@@ -59,25 +52,6 @@ fn next_profile_priority(existing: &[Profile]) -> i32 {
         .max()
         .map(|priority| priority.saturating_add(1))
         .unwrap_or(0)
-}
-
-fn unique_profile_name(existing: &[Profile], base: &str) -> String {
-    let names = existing
-        .iter()
-        .map(|profile| profile.name.as_str())
-        .collect::<HashSet<_>>();
-    if !names.contains(base) {
-        return base.to_owned();
-    }
-
-    for index in 2.. {
-        let candidate = format!("{base} {index}");
-        if !names.contains(candidate.as_str()) {
-            return candidate;
-        }
-    }
-
-    unreachable!("unbounded profile name search should always return")
 }
 
 fn unique_profile_id(existing: &[Profile], base: &str) -> String {
@@ -186,18 +160,6 @@ mod tests {
         assert_eq!(profile.outputs[0].mode.as_deref(), Some("3840x2160@59.94"));
         assert_eq!(profile.outputs[0].scale, Some(1.5));
         assert_eq!(profile.outputs[0].position, Some(Position { x: 0, y: 0 }));
-    }
-
-    #[test]
-    fn duplicate_profile_uses_unique_id_and_name() {
-        let source = profile("home", "Home", 10);
-        let existing = vec![source.clone(), profile("home-copy", "Home Copy", 10)];
-
-        let duplicated = duplicate_profile(&existing, &source);
-
-        assert_eq!(duplicated.id, "home-copy-2");
-        assert_eq!(duplicated.name, "Home Copy 2");
-        assert_eq!(duplicated.priority, source.priority);
     }
 
     #[test]
