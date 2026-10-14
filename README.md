@@ -106,7 +106,7 @@ Core modules live under `src/`:
 - `model.rs`: shared config/runtime data types.
 - `config.rs`: config paths, load/save, validation, backups.
 - `matching.rs`: matcher evaluation and profile selection.
-- `daemon.rs`: reconcile loop, daemon state, no-op fingerprinting.
+- `daemon.rs`: reconcile loop, daemon state, profile error handling.
 - `control.rs`: local JSON control socket protocol.
 - `placement.rs`: monitor rectangle, overlap, normalization, and snapping math.
 - `niri/`: niri IPC, output normalization, apply planning and execution.

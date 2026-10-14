@@ -189,6 +189,13 @@ Unmentioned connected outputs are left in their current enabled state and report
 
 Apply action order is fixed for safety: enable outputs first, then mode, scale, transform, VRR, position, and finally disable outputs.
 
+Only settings that differ from the current output state are applied. An output that is already enabled is not enabled again, an output that is already disabled is not disabled again, and a setting that already has the configured value produces no action. Two settings compare loosely:
+
+- A `mode` without a refresh rate is satisfied by any refresh rate at that size.
+- A `scale` within 1/240 of the current scale counts as applied, because niri can round fractional scales to multiples of 1/120.
+
+An output that the profile enables gets every configured setting, because its previous settings are unknown.
+
 ## Validation and Safety
 
 The config loader rejects:

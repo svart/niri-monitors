@@ -1,24 +1,24 @@
 use crate::matching::select_profile;
 use crate::model::Config;
 use crate::niri::apply::{
-    ApplyExecutionError, ApplyPlan, ApplyPlanError, build_apply_plan, dry_run_apply_plan,
-    execute_apply_plan, format_dry_run,
+    ApplyExecutionError, ApplyPlanError, build_apply_plan, dry_run_apply_plan, execute_apply_plan,
+    format_dry_run,
 };
 use crate::niri::ipc::{NiriClient, NiriError};
 use crate::niri::output::NiriOutput;
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
+use std::fmt::Display;
+use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 use thiserror::Error;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 #[derive(Debug, Clone)]
 pub struct DaemonState {
     pub config: Config,
     pub outputs: Vec<NiriOutput>,
     pub selected_profile: Option<String>,
-    pub last_applied_fingerprint: Option<String>,
     pub manual_profile: Option<String>,
     pub manual_layout: bool,
     pub auto_apply: bool,
@@ -32,7 +32,6 @@ impl DaemonState {
             config,
             outputs: Vec::new(),
             selected_profile: None,
-            last_applied_fingerprint: None,
             manual_profile: None,
             manual_layout: false,
             last_apply: None,
@@ -45,6 +44,28 @@ pub struct LastApply {
     pub profile_id: String,
     pub success: bool,
     pub warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl LastApply {
+    pub fn succeeded(profile_id: String, warnings: Vec<String>) -> Self {
+        Self {
+            profile_id,
+            success: true,
+            warnings,
+            error: None,
+        }
+    }
+
+    pub fn failed(profile_id: String, warnings: Vec<String>, error: impl Display) -> Self {
+        Self {
+            profile_id,
+            success: false,
+            warnings,
+            error: Some(error.to_string()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,7 +123,6 @@ fn reconcile_outputs_with_mode(
     dry_run: bool,
     force_apply: bool,
 ) -> Result<ReconcileOutcome, DaemonError> {
-    let output_fingerprint = output_fingerprint(&outputs);
     state.outputs = outputs;
 
     if state.manual_layout && !state.auto_apply && !force_apply {
@@ -137,18 +157,19 @@ fn reconcile_outputs_with_mode(
     };
 
     state.selected_profile = Some(profile.id.clone());
-    let plan = build_apply_plan(&state.config, profile, &state.outputs)?;
-    let reconcile_fingerprint = reconcile_fingerprint(&plan, &output_fingerprint);
+    let plan = match build_apply_plan(&state.config, profile, &state.outputs) {
+        Ok(plan) => plan,
+        Err(error) => {
+            state.last_apply = Some(LastApply::failed(profile.id.clone(), Vec::new(), &error));
+            return Err(error.into());
+        }
+    };
     let warnings = plan.warnings.clone();
 
     if dry_run {
         let report = dry_run_apply_plan(&plan);
         let dry_run_output = format_dry_run(&plan);
-        state.last_apply = Some(LastApply {
-            profile_id: report.profile_id.clone(),
-            success: true,
-            warnings: report.warnings,
-        });
+        state.last_apply = Some(LastApply::succeeded(report.profile_id, report.warnings));
         return Ok(ReconcileOutcome {
             profile_id: Some(plan.profile_id),
             applied: false,
@@ -171,8 +192,12 @@ fn reconcile_outputs_with_mode(
         });
     }
 
-    if state.last_applied_fingerprint.as_deref() == Some(&reconcile_fingerprint) {
-        debug!(profile_id = %plan.profile_id, "skipping unchanged monitor state");
+    if plan.actions.is_empty() {
+        debug!(profile_id = %plan.profile_id, "outputs already match profile");
+        state.last_apply = Some(LastApply::succeeded(
+            plan.profile_id.clone(),
+            warnings.clone(),
+        ));
         return Ok(ReconcileOutcome {
             profile_id: Some(plan.profile_id),
             applied: false,
@@ -186,12 +211,13 @@ fn reconcile_outputs_with_mode(
     match execute_apply_plan(client, &plan) {
         Ok(report) => {
             info!(profile_id = %report.profile_id, actions = report.applied_actions, "applied monitor profile");
-            state.last_applied_fingerprint = Some(reconcile_fingerprint);
-            state.last_apply = Some(LastApply {
-                profile_id: report.profile_id.clone(),
-                success: true,
-                warnings: report.warnings.clone(),
-            });
+            state.last_apply = Some(LastApply::succeeded(
+                report.profile_id.clone(),
+                report.warnings.clone(),
+            ));
+            // Keep what niri reports after the apply, so the poll loop does not
+            // mistake this apply for an output change.
+            state.outputs = client.outputs()?;
             Ok(ReconcileOutcome {
                 profile_id: Some(report.profile_id),
                 applied: true,
@@ -202,113 +228,77 @@ fn reconcile_outputs_with_mode(
             })
         }
         Err(error) => {
-            state.last_apply = Some(LastApply {
-                profile_id: plan.profile_id,
-                success: false,
-                warnings,
-            });
+            state.last_apply = Some(LastApply::failed(plan.profile_id, warnings, &error));
             Err(DaemonError::Apply(error))
         }
     }
 }
 
-pub fn run_loop(
+/// Like `reconcile_once`, but a profile that cannot be planned or applied is only logged
+/// and recorded in `last_apply`. Exiting would not fix the profile and would make the
+/// service restart in a loop.
+///
+/// Errors reading niri outputs are still returned: niri's socket path changes when niri
+/// restarts, so the service manager has to restart the daemon with the new `NIRI_SOCKET`.
+pub fn reconcile_logging_profile_errors(
     client: &mut impl NiriClient,
     state: &mut DaemonState,
     dry_run: bool,
 ) -> Result<(), DaemonError> {
-    reconcile_once(client, state, dry_run)?;
-
-    loop {
-        let previous_fingerprint = output_fingerprint(&state.outputs);
-        thread::sleep(Duration::from_millis(state.config.daemon.poll_interval_ms));
-
-        let outputs = client.outputs()?;
-        let next_fingerprint = output_fingerprint(&outputs);
-        if next_fingerprint == previous_fingerprint {
-            continue;
+    match reconcile_once(client, state, dry_run) {
+        Ok(_) => Ok(()),
+        Err(error @ (DaemonError::Plan(_) | DaemonError::Apply(_))) => {
+            error!(%error, "could not apply monitor profile; waiting for the next output change");
+            Ok(())
         }
-
-        info!("detected output state change; debouncing before reconcile");
-        thread::sleep(Duration::from_millis(state.config.daemon.debounce_ms));
-        reconcile_once(client, state, dry_run)?;
+        Err(error) => Err(error),
     }
 }
 
-pub fn run_loop_shared(
+/// Reconciles once, then reconciles again whenever niri reports different outputs.
+/// Returns only when niri cannot be reached or the state lock is poisoned.
+pub fn run_loop(
     client: &mut impl NiriClient,
-    state: Arc<Mutex<DaemonState>>,
+    state: &Mutex<DaemonState>,
     dry_run: bool,
 ) -> Result<(), DaemonError> {
-    {
-        let mut state = state.lock().map_err(|_| DaemonError::StateLock)?;
-        reconcile_once(client, &mut state, dry_run)?;
-    }
+    reconcile_logging_profile_errors(client, &mut *lock_state(state)?, dry_run)?;
 
     loop {
-        let (previous_fingerprint, poll_interval_ms, debounce_ms) = {
-            let state = state.lock().map_err(|_| DaemonError::StateLock)?;
-            (
-                output_fingerprint(&state.outputs),
-                state.config.daemon.poll_interval_ms,
-                state.config.daemon.debounce_ms,
-            )
-        };
-        thread::sleep(Duration::from_millis(poll_interval_ms));
-
-        let outputs = client.outputs()?;
-        let next_fingerprint = output_fingerprint(&outputs);
-        if next_fingerprint == previous_fingerprint {
-            continue;
-        }
-
-        info!("detected output state change; debouncing before reconcile");
-        thread::sleep(Duration::from_millis(debounce_ms));
-        let mut state = state.lock().map_err(|_| DaemonError::StateLock)?;
-        reconcile_once(client, &mut state, dry_run)?;
+        poll_once(client, state, dry_run, &mut thread::sleep)?;
     }
 }
 
-pub fn output_fingerprint(outputs: &[NiriOutput]) -> String {
-    let mut parts: Vec<String> = outputs
-        .iter()
-        .map(|output| {
-            let logical = output.logical.as_ref().map_or_else(
-                || "disabled".to_string(),
-                |logical| {
-                    format!(
-                        "enabled:{}:{}:{}:{}:{}:{}",
-                        logical.x,
-                        logical.y,
-                        logical.width,
-                        logical.height,
-                        logical.scale,
-                        logical.transform
-                    )
-                },
-            );
-            format!(
-                "{}|{}|{}|{}|{:?}|{}|{}|{}",
-                output.connector,
-                output.make,
-                output.model,
-                output.serial.as_deref().unwrap_or("Unknown"),
-                output.current_mode,
-                output.vrr_supported,
-                output.vrr_enabled,
-                logical
-            )
-        })
-        .collect();
-    parts.sort();
-    parts.join("\n")
+/// Waits one poll interval, then reconciles if niri reports different outputs than the
+/// last reconcile saw. `sleep` is a parameter so tests can run this without waiting.
+pub fn poll_once(
+    client: &mut impl NiriClient,
+    state: &Mutex<DaemonState>,
+    dry_run: bool,
+    sleep: &mut impl FnMut(Duration),
+) -> Result<(), DaemonError> {
+    let (previous_outputs, poll_interval, debounce) = {
+        let state = lock_state(state)?;
+        (
+            state.outputs.clone(),
+            Duration::from_millis(state.config.daemon.poll_interval_ms),
+            Duration::from_millis(state.config.daemon.debounce_ms),
+        )
+    };
+    sleep(poll_interval);
+
+    // Outputs are parsed from niri's connector-keyed map, so their order is stable.
+    if client.outputs()? == previous_outputs {
+        return Ok(());
+    }
+
+    info!("detected output state change; debouncing before reconcile");
+    sleep(debounce);
+    reconcile_logging_profile_errors(client, &mut *lock_state(state)?, dry_run)
 }
 
-fn reconcile_fingerprint(plan: &ApplyPlan, output_fingerprint: &str) -> String {
-    format!(
-        "profile:{}\noutputs:{}\nactions:{:?}",
-        plan.profile_id, output_fingerprint, plan.actions
-    )
+fn lock_state(state: &Mutex<DaemonState>) -> Result<MutexGuard<'_, DaemonState>, DaemonError> {
+    state.lock().map_err(|_| DaemonError::StateLock)
 }
 
 #[cfg(test)]
@@ -321,14 +311,6 @@ mod tests {
     use crate::niri::output::{LogicalOutput, NiriMode};
 
     #[test]
-    fn output_fingerprint_is_stable_across_ordering() {
-        let first = vec![output("DP-1", 0), output("HDMI-A-1", 100)];
-        let second = vec![output("HDMI-A-1", 100), output("DP-1", 0)];
-
-        assert_eq!(output_fingerprint(&first), output_fingerprint(&second));
-    }
-
-    #[test]
     fn applies_selected_profile_on_startup() {
         let mut client = FakeClient::new(vec![output("DP-1", 0)]);
         let mut state = DaemonState::new(config());
@@ -338,18 +320,24 @@ mod tests {
 
         assert_eq!(outcome.profile_id.as_deref(), Some("home"));
         assert!(outcome.applied);
-        assert_eq!(client.actions.len(), 3);
+        assert_eq!(
+            client.actions,
+            vec![("DP-1".to_string(), OutputAction::Scale(1.5))]
+        );
     }
 
     #[test]
-    fn does_not_reapply_unchanged_output_state() {
+    fn does_not_reapply_after_own_apply() {
         let mut client = FakeClient::new(vec![output("DP-1", 0)]);
         let mut state = DaemonState::new(config());
 
         reconcile_once(&mut client, &mut state, false).expect("first reconcile should pass");
-        reconcile_once(&mut client, &mut state, false).expect("second reconcile should pass");
+        let outcome =
+            reconcile_once(&mut client, &mut state, false).expect("second reconcile should pass");
 
-        assert_eq!(client.actions.len(), 3);
+        assert!(!outcome.applied);
+        assert!(outcome.skipped);
+        assert_eq!(client.actions.len(), 1);
     }
 
     #[test]
@@ -358,12 +346,12 @@ mod tests {
         let mut state = DaemonState::new(config());
 
         reconcile_once(&mut client, &mut state, false).expect("first reconcile should pass");
-        client.outputs = vec![output("DP-1", 50)];
+        client.outputs = vec![output("DP-1", 0)];
         let outcome =
             reconcile_once(&mut client, &mut state, false).expect("changed reconcile should pass");
 
         assert!(outcome.applied);
-        assert_eq!(client.actions.len(), 6);
+        assert_eq!(client.actions.len(), 2);
     }
 
     #[test]
@@ -376,6 +364,85 @@ mod tests {
         assert!(!outcome.applied);
         assert!(outcome.dry_run_output.unwrap().contains("profile: home"));
         assert!(client.actions.is_empty());
+    }
+
+    #[test]
+    fn poll_does_not_apply_again_after_own_apply() {
+        let mut client = FakeClient::new(vec![output("DP-1", 0)]);
+        let state = Mutex::new(DaemonState::new(config()));
+        reconcile_once(&mut client, &mut state.lock().unwrap(), false)
+            .expect("startup reconcile should pass");
+
+        poll_once(&mut client, &state, false, &mut |_| {}).expect("poll should pass");
+
+        assert_eq!(client.actions.len(), 1);
+    }
+
+    #[test]
+    fn poll_reconciles_after_output_change() {
+        let mut client = FakeClient::new(vec![output("DP-1", 0)]);
+        let state = Mutex::new(DaemonState::new(config()));
+        reconcile_once(&mut client, &mut state.lock().unwrap(), false)
+            .expect("startup reconcile should pass");
+        client.outputs = vec![output("DP-1", 0)];
+
+        poll_once(&mut client, &state, false, &mut |_| {}).expect("poll should pass");
+
+        assert_eq!(client.actions.len(), 2);
+    }
+
+    #[test]
+    fn poll_keeps_running_when_profile_cannot_be_planned() {
+        let mut config = config();
+        config.profiles[0].outputs[0].mode = Some("1920x1080@60".to_string());
+        let mut client = FakeClient::new(vec![output("DP-1", 0)]);
+        let state = Mutex::new(DaemonState::new(config));
+
+        poll_once(&mut client, &state, false, &mut |_| {}).expect("plan errors should not stop");
+
+        let last_apply = state.lock().unwrap().last_apply.clone().unwrap();
+        assert_eq!(last_apply.profile_id, "home");
+        assert!(!last_apply.success);
+        assert!(last_apply.error.unwrap().contains("1920x1080@60"));
+        assert!(client.actions.is_empty());
+    }
+
+    #[test]
+    fn poll_keeps_running_when_niri_rejects_an_action() {
+        let mut client = FakeClient::new(vec![output("DP-1", 0)]);
+        client.reject_actions = true;
+        let state = Mutex::new(DaemonState::new(config()));
+
+        poll_once(&mut client, &state, false, &mut |_| {}).expect("apply errors should not stop");
+
+        let last_apply = state.lock().unwrap().last_apply.clone().unwrap();
+        assert!(!last_apply.success);
+        assert!(last_apply.error.unwrap().contains("rejected"));
+    }
+
+    #[test]
+    fn poll_returns_error_when_niri_is_unreachable() {
+        let mut client = FakeClient::new(vec![output("DP-1", 0)]);
+        client.unreachable = true;
+        let state = Mutex::new(DaemonState::new(config()));
+
+        let error = poll_once(&mut client, &state, false, &mut |_| {})
+            .expect_err("niri connection errors should stop the daemon");
+
+        assert!(matches!(error, DaemonError::Niri(_)));
+    }
+
+    #[test]
+    fn startup_reconcile_keeps_running_when_profile_cannot_be_planned() {
+        let mut config = config();
+        config.profiles[0].outputs[0].mode = Some("1920x1080@60".to_string());
+        let mut client = FakeClient::new(vec![output("DP-1", 0)]);
+        let mut state = DaemonState::new(config);
+
+        reconcile_logging_profile_errors(&mut client, &mut state, false)
+            .expect("plan errors should not stop");
+
+        assert!(!state.last_apply.unwrap().success);
     }
 
     fn config() -> Config {
@@ -401,7 +468,7 @@ mod tests {
                     },
                     enabled: Some(true),
                     mode: Some("3440x1440@59.973".to_string()),
-                    scale: None,
+                    scale: Some(1.5),
                     transform: None,
                     position: Some(Position { x: 0, y: 0 }),
                     vrr: None,
@@ -437,22 +504,28 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
     struct FakeClient {
         outputs: Vec<NiriOutput>,
         actions: Vec<(String, OutputAction)>,
+        reject_actions: bool,
+        unreachable: bool,
     }
 
     impl FakeClient {
         fn new(outputs: Vec<NiriOutput>) -> Self {
             Self {
                 outputs,
-                actions: Vec::new(),
+                ..Self::default()
             }
         }
     }
 
     impl NiriClient for FakeClient {
         fn outputs(&mut self) -> Result<Vec<NiriOutput>, NiriError> {
+            if self.unreachable {
+                return Err(NiriError::MissingSocketEnv);
+            }
             Ok(self.outputs.clone())
         }
 
@@ -461,6 +534,26 @@ mod tests {
             output: &str,
             action: OutputAction,
         ) -> Result<(), NiriError> {
+            if self.reject_actions {
+                return Err(NiriError::NiriReply("rejected".to_string()));
+            }
+
+            // Mirror niri: the next outputs read reports the applied settings.
+            if let Some(logical) = self
+                .outputs
+                .iter_mut()
+                .find(|candidate| candidate.connector == output)
+                .and_then(|candidate| candidate.logical.as_mut())
+            {
+                match &action {
+                    OutputAction::Scale(scale) => logical.scale = *scale,
+                    OutputAction::Position(position) => {
+                        logical.x = position.x;
+                        logical.y = position.y;
+                    }
+                    _ => {}
+                }
+            }
             self.actions.push((output.to_string(), action));
             Ok(())
         }

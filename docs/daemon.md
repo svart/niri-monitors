@@ -22,8 +22,8 @@ If the config file is missing or empty, the daemon starts with an empty in-memor
 | Option | Meaning |
 | --- | --- |
 | `--config PATH` | Load a specific TOML config instead of the default path. |
-| `--dry-run` | Build and record apply plans without sending output actions to niri. With `--once`, the plan is printed to stdout. |
-| `--once` | Reconcile once and exit. The control socket is not started in this mode. |
+| `--dry-run` | Build and record apply plans without sending output actions to niri. With `--once`, the plan is printed to stdout. The plan lists only the changes needed to reach the profile. |
+| `--once` | Reconcile once and exit. The control socket is not started in this mode. Exits with an error if the profile cannot be planned or applied. |
 | `--log-level FILTER` | Set the tracing filter. Defaults to `info`; `debug` is useful for troubleshooting. |
 | `--no-control-socket` | Run continuously without the local control socket. |
 
@@ -64,9 +64,16 @@ On startup and after detected output changes, the daemon:
 - Selects the manual profile if one is set, enabled, and still matches connected outputs.
 - Otherwise selects the enabled matching profile with the highest priority, then highest condition specificity, then config order.
 - Builds an apply plan and refuses unsafe plans such as overlapping enabled outputs with known live rectangles or disabling every connected output when `prevent_disable_all = true`.
-- Applies the plan unless `--dry-run`, automatic loading is disabled, or the same profile/actions/output fingerprint were already applied.
+- Plans only the settings that differ from the current output state. If the outputs already match the profile, the plan is empty and nothing is sent to niri.
+- Applies the plan unless `--dry-run` or automatic loading is disabled, then reads the outputs from niri again.
 
-The continuous loop polls every `daemon.poll_interval_ms`. When the output fingerprint changes, it waits `daemon.debounce_ms` before reconciling so transient hotplug states are less likely to be applied.
+The continuous loop polls every `daemon.poll_interval_ms`. When niri reports different outputs than the last reconcile saw, it waits `daemon.debounce_ms` before reconciling so transient hotplug states are less likely to be applied.
+
+### Errors
+
+If the selected profile cannot be planned (for example, its mode is not available, a matcher is ambiguous, or the layout overlaps) or niri rejects an action, the continuous daemon logs the error, records it in `last_apply`, and keeps running. It tries again on the next output change, config reload, or control request that reconciles (`set_auto_mode`, `activate_profile`, `clear_manual_profile`).
+
+If the daemon cannot read outputs from niri, it exits with an error. niri creates a new socket path each time it starts, so a restarted daemon is needed to pick up the new `NIRI_SOCKET`. The example systemd service restarts the daemon on failure.
 
 ## Control Socket
 
@@ -130,7 +137,7 @@ Status data contains:
 | `manual_profile` | Requested manual profile id, if any. |
 | `manual_layout` | Whether a manual runtime layout is active. |
 | `outputs` | Last daemon-observed niri outputs. |
-| `last_apply` | Last apply attempt summary with `profile_id`, `success`, and `warnings`. |
+| `last_apply` | Result of the latest reconcile that selected a profile, with `profile_id`, `success`, `warnings`, and `error` when `success` is `false`. A reconcile with nothing to change counts as a success. |
 
 Preview data contains `profile_id`, `actions`, `warnings`, and `dry_run_output`.
 
@@ -198,5 +205,7 @@ If startup fails with `failed to read config`, the file exists but cannot be rea
 If no profile is selected, run `niri-monitorsd --dry-run --once` and compare connected output descriptions against profile matchers. `niri msg --json outputs` shows the raw output data.
 
 If applying a profile would disable every connected output, the daemon refuses the plan unless `prevent_disable_all = false` is set in `[daemon]`.
+
+If a profile is selected but monitors do not change, check the daemon log or the `last_apply.error` field of a `status` request for the plan or apply error.
 
 If `Apply Preview` is disabled in the GUI, start the daemon if needed and save pending GUI changes first. The daemon only reads the saved config.

@@ -1,7 +1,7 @@
 use clap::Parser;
 use niri_monitors::config::{default_config_path, load_config_or_empty};
 use niri_monitors::control::{default_control_socket_path, start_control_socket};
-use niri_monitors::daemon::{DaemonState, reconcile_once, run_loop_shared};
+use niri_monitors::daemon::{DaemonState, reconcile_once, run_loop};
 use niri_monitors::niri::ipc::SocketNiriClient;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::debug!("control socket disabled");
     }
 
-    run_loop_shared(&mut client, state, args.dry_run)?;
+    run_loop(&mut client, &state, args.dry_run)?;
     Ok(())
 }
 

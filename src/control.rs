@@ -276,7 +276,6 @@ fn set_auto_mode(
     if enabled {
         state.manual_profile = None;
         state.manual_layout = false;
-        state.last_applied_fingerprint = None;
         reconcile_to_status(state, client)
     } else {
         ControlResponse::ok(status_data(state))
@@ -309,7 +308,6 @@ fn activate_profile(
     state.auto_apply = false;
     state.manual_layout = false;
     state.manual_profile = Some(profile_id);
-    state.last_applied_fingerprint = None;
     match reconcile_outputs_for_manual_apply(client, state, outputs) {
         Ok(_) => ControlResponse::ok(status_data(state)),
         Err(error) => error_from_daemon(error),
@@ -320,7 +318,6 @@ fn clear_manual_profile(state: &mut DaemonState, client: &mut impl NiriClient) -
     state.manual_profile = None;
     state.manual_layout = false;
     state.auto_apply = true;
-    state.last_applied_fingerprint = None;
     reconcile_to_status(state, client)
 }
 
@@ -421,24 +418,15 @@ fn apply_manual_layout(
     state.manual_profile = None;
     state.manual_layout = true;
     state.selected_profile = None;
-    state.last_applied_fingerprint = None;
 
     match execute_apply_plan(client, &plan) {
         Ok(report) => {
             state.outputs = planned_outputs;
-            state.last_apply = Some(LastApply {
-                profile_id: report.profile_id,
-                success: true,
-                warnings: report.warnings,
-            });
+            state.last_apply = Some(LastApply::succeeded(report.profile_id, report.warnings));
             ControlResponse::ok(status_data(state))
         }
         Err(error) => {
-            state.last_apply = Some(LastApply {
-                profile_id: plan.profile_id,
-                success: false,
-                warnings: Vec::new(),
-            });
+            state.last_apply = Some(LastApply::failed(plan.profile_id, Vec::new(), &error));
             error_from_daemon(DaemonError::Apply(error))
         }
     }
@@ -578,7 +566,10 @@ mod tests {
         assert_eq!(state.manual_profile.as_deref(), Some("home"));
         assert!(!state.auto_apply);
         assert!(!state.manual_layout);
-        assert_eq!(client.actions.len(), 3);
+        assert_eq!(
+            client.actions,
+            vec![("DP-1".to_string(), OutputAction::Scale(1.5))]
+        );
     }
 
     #[test]
@@ -598,7 +589,10 @@ mod tests {
 
         assert!(response.ok);
         assert_eq!(state.manual_profile.as_deref(), Some("home"));
-        assert_eq!(client.actions.len(), 3);
+        assert_eq!(
+            client.actions,
+            vec![("DP-1".to_string(), OutputAction::Scale(1.5))]
+        );
     }
 
     #[test]
@@ -779,7 +773,7 @@ mod tests {
                     },
                     enabled: Some(true),
                     mode: Some("3440x1440@59.973".to_string()),
-                    scale: None,
+                    scale: Some(1.5),
                     transform: None,
                     position: Some(Position { x: 0, y: 0 }),
                     vrr: None,

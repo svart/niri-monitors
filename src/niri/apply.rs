@@ -139,6 +139,24 @@ struct ModeSpec {
     refresh_millihz: Option<u32>,
 }
 
+impl ModeSpec {
+    fn matches(self, mode: &NiriMode) -> bool {
+        mode.width == self.width
+            && mode.height == self.height
+            && self
+                .refresh_millihz
+                .is_none_or(|refresh| mode.refresh_millihz == refresh)
+    }
+}
+
+// niri may round a fractional scale to a nearby multiple of 1/120, so the reported
+// scale can differ slightly from the configured one. Within half a step counts as applied.
+const SCALE_TOLERANCE: f64 = 1.0 / 240.0;
+
+/// Builds the actions that move the connected outputs to `profile`.
+///
+/// Only settings that differ from the current output state produce actions, so a plan
+/// for outputs that already match the profile is empty.
 pub fn build_apply_plan(
     config: &Config,
     profile: &Profile,
@@ -179,9 +197,12 @@ pub fn build_apply_plan(
         }
 
         let output_name = output.connector.clone();
+        let current = output.logical.as_ref();
         if profile_output.enabled == Some(false) {
             final_enabled.insert(output_name.clone(), false);
-            disable_actions.push(planned(output_name, OutputAction::Disable));
+            if current.is_some() {
+                disable_actions.push(planned(output_name, OutputAction::Disable));
+            }
             continue;
         }
 
@@ -196,36 +217,48 @@ pub fn build_apply_plan(
             final_enabled.insert(output_name.clone(), true);
         }
 
-        if profile_output.enabled == Some(true) || (requires_enabled && output.logical.is_none()) {
+        if requires_enabled && current.is_none() {
             enable_actions.push(planned(output_name.clone(), OutputAction::Enable));
         }
 
         if let Some(mode) = &profile_output.mode {
             let mode_spec = validate_mode(profile, &output_name, mode, &output.modes)?;
-            mode_actions.push(planned(
-                output_name.clone(),
-                OutputAction::Mode {
-                    width: mode_spec.width,
-                    height: mode_spec.height,
-                    refresh_millihz: mode_spec.refresh_millihz,
-                },
-            ));
+            let current_mode = output
+                .current_mode
+                .filter(|_| current.is_some())
+                .and_then(|index| output.modes.get(index));
+            if !current_mode.is_some_and(|current_mode| mode_spec.matches(current_mode)) {
+                mode_actions.push(planned(
+                    output_name.clone(),
+                    OutputAction::Mode {
+                        width: mode_spec.width,
+                        height: mode_spec.height,
+                        refresh_millihz: mode_spec.refresh_millihz,
+                    },
+                ));
+            }
         }
 
         if let Some(scale) = profile_output.scale {
             validate_scale(profile, &output_name, scale)?;
-            scale_actions.push(planned(output_name.clone(), OutputAction::Scale(scale)));
+            if !current.is_some_and(|logical| (logical.scale - scale).abs() < SCALE_TOLERANCE) {
+                scale_actions.push(planned(output_name.clone(), OutputAction::Scale(scale)));
+            }
         }
 
         if let Some(transform) = &profile_output.transform {
             validate_transform(profile, &output_name, transform)?;
-            transform_actions.push(planned(
-                output_name.clone(),
-                OutputAction::Transform(transform.clone()),
-            ));
+            if current.is_none_or(|logical| logical.transform != *transform) {
+                transform_actions.push(planned(
+                    output_name.clone(),
+                    OutputAction::Transform(transform.clone()),
+                ));
+            }
         }
 
-        if let Some(vrr) = profile_output.vrr {
+        if let Some(vrr) = profile_output.vrr
+            && (current.is_none() || output.vrr_enabled != vrr)
+        {
             vrr_actions.push(planned(output_name.clone(), OutputAction::Vrr(vrr)));
         }
 
@@ -306,29 +339,33 @@ fn normalize_position_actions(
         let Some(output) = outputs.get(rect.output_index) else {
             continue;
         };
-        let normalized = Position {
+        let normalized = OutputAction::Position(Position {
             x: rect.x,
             y: rect.y,
-        };
+        });
 
-        if let Some(position_action) = position_actions
+        match position_actions
             .iter_mut()
             .find(|action| action.output == output.connector)
         {
-            position_action.action = OutputAction::Position(normalized);
-            continue;
-        }
-
-        let Some(current) = output.logical.as_ref() else {
-            continue;
-        };
-        if current.x != normalized.x || current.y != normalized.y {
-            position_actions.push(planned(
-                output.connector.clone(),
-                OutputAction::Position(normalized),
-            ));
+            Some(position_action) => position_action.action = normalized,
+            None => position_actions.push(planned(output.connector.clone(), normalized)),
         }
     }
+
+    position_actions.retain(|action| !is_current_position(outputs, action));
+}
+
+fn is_current_position(outputs: &[NiriOutput], action: &PlannedOutputAction) -> bool {
+    let OutputAction::Position(position) = &action.action else {
+        return false;
+    };
+
+    outputs
+        .iter()
+        .find(|output| output.connector == action.output)
+        .and_then(|output| output.logical.as_ref())
+        .is_some_and(|logical| logical.x == position.x && logical.y == position.y)
 }
 
 fn validate_non_overlapping_layout(
@@ -448,13 +485,7 @@ fn validate_mode(
         reason,
     })?;
 
-    if modes.iter().any(|available| {
-        available.width == mode_spec.width
-            && available.height == mode_spec.height
-            && mode_spec
-                .refresh_millihz
-                .is_none_or(|refresh| available.refresh_millihz == refresh)
-    }) {
+    if modes.iter().any(|available| mode_spec.matches(available)) {
         Ok(mode_spec)
     } else {
         Err(ApplyPlanError::InvalidMode {
@@ -564,12 +595,33 @@ mod tests {
                     position: None,
                     vrr: None,
                 },
+                ProfileOutput {
+                    matcher: matcher("DP-2"),
+                    enabled: Some(true),
+                    mode: None,
+                    scale: None,
+                    transform: None,
+                    position: None,
+                    vrr: None,
+                },
             ],
         };
+        let mut dp1 = output("DP-1", true);
+        dp1.modes.push(NiriMode {
+            width: 2560,
+            height: 1080,
+            refresh_millihz: 60000,
+            is_preferred: false,
+        });
+        dp1.current_mode = Some(1);
+        let logical = dp1.logical.as_mut().expect("DP-1 should be enabled");
+        logical.x = 100;
+        logical.transform = "90".to_string();
         let outputs = vec![
-            output("DP-1", true),
+            dp1,
             output("HDMI-A-1", true),
-            output("DP-2", true),
+            output("DP-2", false),
+            output("DP-3", true),
         ];
 
         let plan = build_apply_plan(&config, &profile, &outputs).expect("plan should build");
@@ -577,7 +629,7 @@ mod tests {
         assert_eq!(
             plan.actions,
             vec![
-                planned("DP-1".to_string(), OutputAction::Enable),
+                planned("DP-2".to_string(), OutputAction::Enable),
                 planned(
                     "DP-1".to_string(),
                     OutputAction::Mode {
@@ -600,6 +652,105 @@ mod tests {
             ]
         );
         assert_eq!(plan.warnings.len(), 1);
+    }
+
+    #[test]
+    fn plan_is_empty_when_outputs_already_match_profile() {
+        let config = config(true);
+        let profile = profile_with_outputs(vec![ProfileOutput {
+            matcher: matcher("DP-1"),
+            enabled: Some(true),
+            mode: Some("3440x1440@59.973".to_string()),
+            scale: Some(1.0),
+            transform: Some("normal".to_string()),
+            position: Some(Position { x: 0, y: 0 }),
+            vrr: Some(false),
+        }]);
+        let outputs = vec![output("DP-1", true)];
+
+        let plan = build_apply_plan(&config, &profile, &outputs).expect("plan should build");
+
+        assert_eq!(plan.actions, Vec::new());
+    }
+
+    #[test]
+    fn plan_contains_only_settings_that_differ() {
+        let config = config(true);
+        let profile = profile_with_outputs(vec![ProfileOutput {
+            matcher: matcher("DP-1"),
+            enabled: Some(true),
+            mode: Some("3440x1440@59.973".to_string()),
+            scale: Some(1.25),
+            transform: Some("normal".to_string()),
+            position: Some(Position { x: 0, y: 0 }),
+            vrr: Some(false),
+        }]);
+        let outputs = vec![output("DP-1", true)];
+
+        let plan = build_apply_plan(&config, &profile, &outputs).expect("plan should build");
+
+        assert_eq!(
+            plan.actions,
+            vec![planned("DP-1".to_string(), OutputAction::Scale(1.25))]
+        );
+    }
+
+    #[test]
+    fn plan_does_not_disable_an_already_disabled_output() {
+        let config = config(true);
+        let profile = profile_with_outputs(vec![ProfileOutput {
+            matcher: matcher("HDMI-A-1"),
+            enabled: Some(false),
+            mode: None,
+            scale: None,
+            transform: None,
+            position: None,
+            vrr: None,
+        }]);
+        let outputs = vec![output("DP-1", true), output("HDMI-A-1", false)];
+
+        let plan = build_apply_plan(&config, &profile, &outputs).expect("plan should build");
+
+        assert_eq!(plan.actions, Vec::new());
+    }
+
+    #[test]
+    fn mode_without_refresh_matches_any_refresh_at_that_size() {
+        let config = config(true);
+        let profile = profile_with_outputs(vec![ProfileOutput {
+            matcher: matcher("DP-1"),
+            enabled: None,
+            mode: Some("3440x1440".to_string()),
+            scale: None,
+            transform: None,
+            position: None,
+            vrr: None,
+        }]);
+        let outputs = vec![output("DP-1", true)];
+
+        let plan = build_apply_plan(&config, &profile, &outputs).expect("plan should build");
+
+        assert_eq!(plan.actions, Vec::new());
+    }
+
+    #[test]
+    fn scale_within_niri_rounding_is_not_reapplied() {
+        let config = config(true);
+        let profile = profile_with_outputs(vec![ProfileOutput {
+            matcher: matcher("DP-1"),
+            enabled: None,
+            mode: None,
+            scale: Some(1.26),
+            transform: None,
+            position: None,
+            vrr: None,
+        }]);
+        let mut dp1 = output("DP-1", true);
+        dp1.logical.as_mut().expect("DP-1 should be enabled").scale = 151.0 / 120.0;
+
+        let plan = build_apply_plan(&config, &profile, &[dp1]).expect("plan should build");
+
+        assert_eq!(plan.actions, Vec::new());
     }
 
     #[test]
@@ -725,14 +876,13 @@ mod tests {
 
         let plan = build_apply_plan(&config, &profile, &outputs).expect("plan should build");
 
-        assert!(plan.actions.contains(&planned(
-            "DP-1".to_string(),
-            OutputAction::Position(Position { x: 0, y: 0 })
-        )));
-        assert!(plan.actions.contains(&planned(
-            "DP-2".to_string(),
-            OutputAction::Position(Position { x: 3_440, y: 0 })
-        )));
+        assert_eq!(
+            plan.actions,
+            vec![planned(
+                "DP-2".to_string(),
+                OutputAction::Position(Position { x: 3_440, y: 0 })
+            )]
+        );
     }
 
     #[test]
@@ -820,6 +970,17 @@ mod tests {
                 ..DaemonConfig::default()
             },
             profiles: Vec::new(),
+        }
+    }
+
+    fn profile_with_outputs(outputs: Vec<ProfileOutput>) -> Profile {
+        Profile {
+            id: "home".to_string(),
+            name: "Home".to_string(),
+            priority: 0,
+            enabled: true,
+            condition: ProfileCondition::default(),
+            outputs,
         }
     }
 

@@ -99,7 +99,7 @@ Use unit tests for:
 - Niri output normalization.
 - Profile matching and deterministic selection.
 - Apply plan ordering and safety checks.
-- Daemon reconciliation and no-op fingerprint behavior.
+- Daemon reconciliation, empty-plan no-op behavior, and run-loop error handling.
 - Control request/response behavior and stable error codes.
 
 Manual verification that requires a running niri session should be called out separately because it depends on `NIRI_SOCKET` and local monitor hardware.
@@ -112,10 +112,10 @@ Use these files as source-of-truth anchors before changing docs or behavior:
 | --- | --- |
 | Config schema, defaults, validation, save backup | `src/model.rs`, `src/config.rs` |
 | Matcher semantics and deterministic selection | `src/matching.rs` |
-| Daemon reconcile loop, dry-run, no-op fingerprinting | `src/daemon.rs` |
+| Daemon reconcile loop, dry-run, error handling | `src/daemon.rs` |
 | Control socket JSON protocol and stable error codes | `src/control.rs`, `src/gui/daemon_client.rs` |
 | Niri JSON IPC and output normalization | `src/niri/ipc.rs`, `src/niri/output.rs` |
-| Apply plan safety, action ordering, dry-run formatting | `src/niri/apply.rs` |
+| Apply plan safety, diff against current state, action ordering, dry-run formatting | `src/niri/apply.rs` |
 | Layout rectangles, snapping, overlap, normalization | `src/placement.rs`, `src/gui/canvas.rs` |
 | GUI user-visible workflow | `src/gui/app.rs`, `src/gui/profile_list.rs`, `src/gui/output_editor.rs` |
 
