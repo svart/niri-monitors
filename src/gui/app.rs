@@ -66,6 +66,14 @@ impl GuiMetrics {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ToolbarAction {
+    New,
+    Rename,
+    Delete,
+    Save,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum LiveOutputsState {
     #[default]
@@ -517,43 +525,33 @@ impl GuiApp {
         let can_save =
             self.config.is_some() && self.config_path.is_some() && self.validation_error.is_none();
 
-        let (new_clicked, rename_clicked, delete_clicked, save_clicked) = if right_to_left {
-            let save_clicked = ui
-                .add_enabled(can_save, save_toolbar_button(metrics))
-                .clicked();
-            let delete_clicked = ui
-                .add_enabled(has_profile, toolbar_button("Delete", metrics))
-                .clicked();
-            let rename_clicked = ui
-                .add_enabled(has_profile, toolbar_button("Rename", metrics))
-                .clicked();
-            let new_clicked = ui.add(toolbar_button("+ New", metrics)).clicked();
-            (new_clicked, rename_clicked, delete_clicked, save_clicked)
-        } else {
-            let new_clicked = ui.add(toolbar_button("+ New", metrics)).clicked();
-            let rename_clicked = ui
-                .add_enabled(has_profile, toolbar_button("Rename", metrics))
-                .clicked();
-            let delete_clicked = ui
-                .add_enabled(has_profile, toolbar_button("Delete", metrics))
-                .clicked();
-            let save_clicked = ui
-                .add_enabled(can_save, save_toolbar_button(metrics))
-                .clicked();
-            (new_clicked, rename_clicked, delete_clicked, save_clicked)
-        };
+        let mut buttons = [
+            (ToolbarAction::New, "+ New", true),
+            (ToolbarAction::Rename, "Rename", has_profile),
+            (ToolbarAction::Delete, "Delete", has_profile),
+            (ToolbarAction::Save, "Save", can_save),
+        ];
+        // A right-to-left layout places the first button on the right.
+        if right_to_left {
+            buttons.reverse();
+        }
 
-        if save_clicked {
-            self.save_draft();
+        let mut clicked = None;
+        for (action, label, enabled) in buttons {
+            if ui
+                .add_enabled(enabled, toolbar_button(label, metrics))
+                .clicked()
+            {
+                clicked = Some(action);
+            }
         }
-        if delete_clicked {
-            self.request_delete_selected_profile();
-        }
-        if rename_clicked {
-            self.renaming_profile = true;
-        }
-        if new_clicked {
-            self.create_profile();
+
+        match clicked {
+            Some(ToolbarAction::New) => self.create_profile(),
+            Some(ToolbarAction::Rename) => self.renaming_profile = true,
+            Some(ToolbarAction::Delete) => self.request_delete_selected_profile(),
+            Some(ToolbarAction::Save) => self.save_draft(),
+            None => {}
         }
     }
 
@@ -822,22 +820,12 @@ impl eframe::App for GuiApp {
 
         egui::TopBottomPanel::top("status_bar")
             .exact_height(metrics.toolbar_height)
-            .frame(
-                egui::Frame::new()
-                    .fill(STRIP_BG)
-                    .inner_margin(metrics.margin(12.0, 8.0))
-                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(51, 54, 77))),
-            )
+            .frame(strip_frame(metrics))
             .show(ctx, |ui| self.show_status_bar(ui, metrics));
 
         egui::TopBottomPanel::bottom("controls_and_info")
             .exact_height(metrics.bottom_height)
-            .frame(
-                egui::Frame::new()
-                    .fill(STRIP_BG)
-                    .inner_margin(metrics.margin(12.0, 8.0))
-                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(51, 54, 77))),
-            )
+            .frame(strip_frame(metrics))
             .show(ctx, |ui| self.show_bottom_panel(ui, metrics));
 
         egui::CentralPanel::default()
@@ -911,11 +899,11 @@ fn toolbar_button(label: &'static str, metrics: GuiMetrics) -> egui::Button<'sta
         .stroke(Stroke::new(1.0_f32, BUTTON_STROKE))
 }
 
-fn save_toolbar_button(metrics: GuiMetrics) -> egui::Button<'static> {
-    egui::Button::new("Save")
-        .min_size(metrics.button_min_size)
-        .fill(BUTTON_BG)
-        .stroke(Stroke::new(1.0_f32, BUTTON_STROKE))
+fn strip_frame(metrics: GuiMetrics) -> egui::Frame {
+    egui::Frame::new()
+        .fill(STRIP_BG)
+        .inner_margin(metrics.margin(12.0, 8.0))
+        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(51, 54, 77)))
 }
 
 fn configs_are_dirty(config: Option<&Config>, original_config: Option<&Config>) -> bool {
