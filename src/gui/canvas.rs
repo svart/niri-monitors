@@ -124,7 +124,6 @@ pub fn show_monitor_canvas(
     connected_outputs: &[NiriOutput],
     state: &mut CanvasState,
 ) -> bool {
-    let mut changed = false;
     let rects = derive_output_rects(profile, connected_outputs);
     if state
         .selected_output
@@ -138,70 +137,14 @@ pub fn show_monitor_canvas(
         return false;
     }
 
-    let available_width = ui.available_width().max(320.0);
-    let available_height = ui.available_height().max(320.0);
-    let desired_size = Vec2::new(available_width, available_height);
-    let (canvas_rect, response) = ui.allocate_exact_size(desired_size, Sense::click_and_drag());
-    let view = state
-        .frozen_view
-        .unwrap_or_else(|| ViewBox::from_rects(&rects));
-
-    if response.drag_started()
-        && let Some(pointer) = response.interact_pointer_pos()
-    {
-        state.selected_output = hit_test(pointer, &rects, view, canvas_rect);
-        state.dragging = state.selected_output.and_then(|output_index| {
-            rects
-                .iter()
-                .find(|rect| rect.output_index == output_index)
-                .map(|rect| {
-                    let pointer = screen_to_logical(pointer, view, canvas_rect);
-                    DragState {
-                        output_index,
-                        grab_offset_x: pointer.x - rect.x as f32,
-                        grab_offset_y: pointer.y - rect.y as f32,
-                    }
-                })
-        });
-        state.frozen_view = Some(view);
-    } else if response.clicked()
-        && let Some(pointer) = response.interact_pointer_pos()
-    {
-        state.selected_output = hit_test(pointer, &rects, view, canvas_rect);
-    }
-
-    if response.dragged()
-        && let (Some(pointer), Some(dragging)) = (response.interact_pointer_pos(), state.dragging)
-        && let Some(moving) = rects
-            .iter()
-            .find(|rect| rect.output_index == dragging.output_index)
-    {
-        let pointer = screen_to_logical(pointer, view, canvas_rect);
-        let proposed = Position {
-            x: (pointer.x - dragging.grab_offset_x).round() as i32,
-            y: (pointer.y - dragging.grab_offset_y).round() as i32,
-        };
-        let other_rects = rects
-            .iter()
-            .filter(|rect| rect.output_index != dragging.output_index)
-            .cloned()
-            .collect::<Vec<_>>();
-        let snapped = snap_position(moving, proposed, &other_rects, SNAP_THRESHOLD);
-        state.snap_lines = snapped.snap_lines;
-        if let Some(output) = profile.outputs.get_mut(dragging.output_index) {
-            output.position = Some(snapped.position);
-            changed = true;
-        }
-    }
-
-    if response.drag_stopped() {
-        state.dragging = None;
-        state.snap_lines.clear();
-        state.frozen_view = None;
-    }
-
-    draw_canvas(ui, canvas_rect, view, &rects, state);
-    changed
+    let Some((output_index, position)) = show_interactive_canvas(ui, &rects, state, 320.0) else {
+        return false;
+    };
+    let Some(output) = profile.outputs.get_mut(output_index) else {
+        return false;
+    };
+    output.position = Some(position);
+    true
 }
 
 pub fn show_editable_live_monitor_canvas(
@@ -211,7 +154,6 @@ pub fn show_editable_live_monitor_canvas(
     state: &mut CanvasState,
 ) -> bool {
     draft.sync_from_outputs(outputs);
-    let mut changed = false;
     let rects = draft.draft_rects(outputs);
 
     if state
@@ -230,18 +172,44 @@ pub fn show_editable_live_monitor_canvas(
         return false;
     }
 
-    let available_width = ui.available_width().max(320.0);
-    let available_height = ui.available_height().max(360.0);
-    let desired_size = Vec2::new(available_width, available_height);
+    let Some((output_index, position)) = show_interactive_canvas(ui, &rects, state, 360.0) else {
+        return false;
+    };
+    let Some(draft_position) = rects
+        .iter()
+        .position(|rect| rect.output_index == output_index)
+        .and_then(|draft_index| draft.draft_positions.get_mut(draft_index))
+    else {
+        return false;
+    };
+    if *draft_position == position {
+        return false;
+    }
+    *draft_position = position;
+    true
+}
+
+/// Draws `rects` and lets the user select one and drag it with snapping. Returns the
+/// dragged output and its snapped position on frames where a drag moves it.
+fn show_interactive_canvas(
+    ui: &mut egui::Ui,
+    rects: &[OutputRect],
+    state: &mut CanvasState,
+    min_height: f32,
+) -> Option<(usize, Position)> {
+    let desired_size = Vec2::new(
+        ui.available_width().max(320.0),
+        ui.available_height().max(min_height),
+    );
     let (canvas_rect, response) = ui.allocate_exact_size(desired_size, Sense::click_and_drag());
     let view = state
         .frozen_view
-        .unwrap_or_else(|| ViewBox::from_rects(&rects));
+        .unwrap_or_else(|| ViewBox::from_rects(rects));
 
     if response.drag_started()
         && let Some(pointer) = response.interact_pointer_pos()
     {
-        state.selected_output = hit_test(pointer, &rects, view, canvas_rect);
+        state.selected_output = hit_test(pointer, rects, view, canvas_rect);
         state.dragging = state.selected_output.and_then(|output_index| {
             rects
                 .iter()
@@ -259,9 +227,10 @@ pub fn show_editable_live_monitor_canvas(
     } else if response.clicked()
         && let Some(pointer) = response.interact_pointer_pos()
     {
-        state.selected_output = hit_test(pointer, &rects, view, canvas_rect);
+        state.selected_output = hit_test(pointer, rects, view, canvas_rect);
     }
 
+    let mut moved = None;
     if response.dragged()
         && let (Some(pointer), Some(dragging)) = (response.interact_pointer_pos(), state.dragging)
         && let Some(moving) = rects
@@ -280,16 +249,7 @@ pub fn show_editable_live_monitor_canvas(
             .collect::<Vec<_>>();
         let snapped = snap_position(moving, proposed, &other_rects, SNAP_THRESHOLD);
         state.snap_lines = snapped.snap_lines;
-
-        if let Some(draft_index) = rects
-            .iter()
-            .position(|rect| rect.output_index == dragging.output_index)
-            && let Some(position) = draft.draft_positions.get_mut(draft_index)
-            && *position != snapped.position
-        {
-            *position = snapped.position;
-            changed = true;
-        }
+        moved = Some((dragging.output_index, snapped.position));
     }
 
     if response.drag_stopped() {
@@ -298,8 +258,8 @@ pub fn show_editable_live_monitor_canvas(
         state.frozen_view = None;
     }
 
-    draw_canvas(ui, canvas_rect, view, &rects, state);
-    changed
+    draw_canvas(ui, canvas_rect, view, rects, state);
+    moved
 }
 
 fn draw_canvas(
