@@ -5,7 +5,6 @@ use niri_monitors::daemon::{DaemonState, reconcile_once, run_loop};
 use niri_monitors::niri::ipc::SocketNiriClient;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -19,15 +18,18 @@ struct Args {
     dry_run: bool,
     #[arg(long)]
     once: bool,
+    /// error, warn, info, debug, or trace
     #[arg(long, default_value = "info")]
-    log_level: String,
+    log_level: tracing::Level,
     #[arg(long)]
     no_control_socket: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    init_logging(&args.log_level)?;
+    tracing_subscriber::fmt()
+        .with_max_level(args.log_level)
+        .init();
 
     let config_path = args.config.map_or_else(default_config_path, Ok)?;
     let config = load_config_or_empty(&config_path)?;
@@ -51,12 +53,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     run_loop(&mut client, &state, args.dry_run)?;
-    Ok(())
-}
-
-fn init_logging(log_level: &str) -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_new(log_level)?)
-        .init();
     Ok(())
 }

@@ -1,7 +1,8 @@
 use crate::matching::matcher_matches_output;
 use crate::model::{ModeSpec, MonitorMatcher, Position, Profile, ProfileOutput, Transform};
 use crate::niri::output::NiriOutput;
-use egui::{Color32, RichText};
+use eframe::egui;
+use eframe::egui::{Color32, RichText};
 
 const ERROR_COLOR: Color32 = Color32::from_rgb(184, 67, 67);
 const WARNING_COLOR: Color32 = Color32::from_rgb(184, 111, 36);

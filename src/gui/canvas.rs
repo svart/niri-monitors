@@ -5,7 +5,8 @@ use crate::placement::{
     first_overlap_message as placement_first_overlap_message, normalize_output_rect_positions,
     overlapping_output_pairs, snap_position,
 };
-use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
+use eframe::egui;
+use eframe::egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
 const SNAP_THRESHOLD: i32 = 12;
 const VIEW_PADDING: f32 = 120.0;

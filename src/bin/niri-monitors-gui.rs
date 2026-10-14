@@ -1,3 +1,4 @@
+use eframe::egui;
 use niri_monitors::GuiApp;
 
 fn main() -> eframe::Result<()> {

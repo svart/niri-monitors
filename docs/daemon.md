@@ -24,7 +24,7 @@ If the config file is missing or empty, the daemon starts with an empty in-memor
 | `--config PATH` | Load a specific TOML config instead of the default path. |
 | `--dry-run` | Build and record apply plans without sending output actions to niri. With `--once`, the plan is printed to stdout. The plan lists only the changes needed to reach the profile. |
 | `--once` | Reconcile once and exit. The control socket is not started in this mode. Exits with an error if the profile cannot be planned or applied. |
-| `--log-level FILTER` | Set the tracing filter. Defaults to `info`; `debug` is useful for troubleshooting. |
+| `--log-level LEVEL` | Set the most detailed log level: `error`, `warn`, `info`, `debug`, or `trace`. Defaults to `info`; `debug` is useful for troubleshooting. Per-module filters are not supported. |
 | `--no-control-socket` | Run continuously without the local control socket. |
 
 ## Manual Run
