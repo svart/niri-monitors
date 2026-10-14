@@ -1,5 +1,5 @@
-use crate::model::{MonitorMatcher, Position, Profile, ProfileCondition, ProfileOutput};
-use crate::niri::output::{NiriMode, NiriOutput};
+use crate::model::{ModeSpec, MonitorMatcher, Position, Profile, ProfileCondition, ProfileOutput};
+use crate::niri::output::NiriOutput;
 use std::collections::HashSet;
 
 pub fn build_new_profile(existing: &[Profile], connected_outputs: &[NiriOutput]) -> Profile {
@@ -117,9 +117,9 @@ fn profile_output_from_output(output: &NiriOutput) -> ProfileOutput {
         mode: output
             .current_mode
             .and_then(|index| output.modes.get(index).copied())
-            .map(format_mode),
+            .map(ModeSpec::from),
         scale: logical.map(|logical| logical.scale),
-        transform: logical.map(|logical| logical.transform.clone()),
+        transform: logical.map(|logical| logical.transform),
         position: logical.map(|logical| Position {
             x: logical.x,
             y: logical.y,
@@ -128,22 +128,12 @@ fn profile_output_from_output(output: &NiriOutput) -> ProfileOutput {
     }
 }
 
-fn format_mode(mode: NiriMode) -> String {
-    let mut refresh = format!("{:.3}", mode.refresh_hz());
-    while refresh.contains('.') && refresh.ends_with('0') {
-        refresh.pop();
-    }
-    if refresh.ends_with('.') {
-        refresh.pop();
-    }
-    format!("{}x{}@{}", mode.width, mode.height, refresh)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::ProfileCondition;
-    use crate::niri::output::LogicalOutput;
+    use crate::model::Transform;
+    use crate::niri::output::{LogicalOutput, NiriMode};
 
     #[test]
     fn new_profile_uses_next_name_priority_and_connected_outputs() {
@@ -157,7 +147,13 @@ mod tests {
         assert_eq!(profile.priority, 5);
         assert_eq!(profile.condition.all_connected.len(), 1);
         assert_eq!(profile.outputs.len(), 1);
-        assert_eq!(profile.outputs[0].mode.as_deref(), Some("3840x2160@59.94"));
+        assert_eq!(
+            profile.outputs[0]
+                .mode
+                .map(|mode| mode.to_string())
+                .as_deref(),
+            Some("3840x2160@59.94")
+        );
         assert_eq!(profile.outputs[0].scale, Some(1.5));
         assert_eq!(profile.outputs[0].position, Some(Position { x: 0, y: 0 }));
     }
@@ -203,7 +199,7 @@ mod tests {
                 width: 2560,
                 height: 1440,
                 scale: 1.5,
-                transform: "normal".to_owned(),
+                transform: Transform::Normal,
             }),
             vrr_supported: true,
             vrr_enabled: false,

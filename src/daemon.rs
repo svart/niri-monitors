@@ -377,6 +377,7 @@ fn lock_state(state: &Mutex<DaemonState>) -> Result<MutexGuard<'_, DaemonState>,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Transform;
     use crate::model::{
         DaemonConfig, MonitorMatcher, Position, Profile, ProfileCondition, ProfileOutput,
     };
@@ -506,7 +507,7 @@ mod tests {
     #[test]
     fn poll_keeps_running_when_profile_cannot_be_planned() {
         let mut config = config();
-        config.profiles[0].outputs[0].mode = Some("1920x1080@60".to_string());
+        config.profiles[0].outputs[0].mode = Some("1920x1080@60".parse().unwrap());
         let mut client = FakeClient::new(vec![output("DP-1", 0)]);
         let state = Mutex::new(DaemonState::new(config));
 
@@ -547,7 +548,7 @@ mod tests {
     #[test]
     fn startup_reconcile_keeps_running_when_profile_cannot_be_planned() {
         let mut config = config();
-        config.profiles[0].outputs[0].mode = Some("1920x1080@60".to_string());
+        config.profiles[0].outputs[0].mode = Some("1920x1080@60".parse().unwrap());
         let mut client = FakeClient::new(vec![output("DP-1", 0)]);
         let mut state = DaemonState::new(config);
 
@@ -579,7 +580,7 @@ mod tests {
                         ..MonitorMatcher::default()
                     },
                     enabled: Some(true),
-                    mode: Some("3440x1440@59.973".to_string()),
+                    mode: Some("3440x1440@59.973".parse().unwrap()),
                     scale: Some(1.5),
                     transform: None,
                     position: Some(Position { x: 0, y: 0 }),
@@ -609,7 +610,7 @@ mod tests {
                 width: 3440,
                 height: 1440,
                 scale: 1.0,
-                transform: "normal".to_string(),
+                transform: Transform::Normal,
             }),
             vrr_supported: true,
             vrr_enabled: false,

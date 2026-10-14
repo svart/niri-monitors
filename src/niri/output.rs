@@ -1,3 +1,4 @@
+use crate::model::{ModeSpec, Transform};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -26,8 +27,24 @@ pub struct NiriMode {
 }
 
 impl NiriMode {
-    pub fn refresh_hz(self) -> f64 {
-        f64::from(self.refresh_millihz) / 1000.0
+    /// Whether this mode satisfies `spec`. A spec without a refresh rate matches any
+    /// refresh rate at its size.
+    pub fn matches(&self, spec: ModeSpec) -> bool {
+        self.width == spec.width
+            && self.height == spec.height
+            && spec
+                .refresh_millihz
+                .is_none_or(|refresh| self.refresh_millihz == refresh)
+    }
+}
+
+impl From<NiriMode> for ModeSpec {
+    fn from(mode: NiriMode) -> Self {
+        Self {
+            width: mode.width,
+            height: mode.height,
+            refresh_millihz: Some(mode.refresh_millihz),
+        }
     }
 }
 
@@ -38,7 +55,7 @@ pub struct LogicalOutput {
     pub width: u32,
     pub height: u32,
     pub scale: f64,
-    pub transform: String,
+    pub transform: Transform,
 }
 
 #[derive(Debug, Error)]
@@ -129,23 +146,8 @@ fn normalize_logical_output(raw: RawLogicalOutput) -> LogicalOutput {
         width: raw.width,
         height: raw.height,
         scale: raw.scale,
-        transform: normalize_transform(&raw.transform),
+        transform: raw.transform,
     }
-}
-
-fn normalize_transform(transform: &str) -> String {
-    match transform {
-        "Normal" | "normal" => "normal",
-        "_90" | "90" => "90",
-        "_180" | "180" => "180",
-        "_270" | "270" => "270",
-        "Flipped" | "flipped" => "flipped",
-        "Flipped90" | "flipped-90" => "flipped-90",
-        "Flipped180" | "flipped-180" => "flipped-180",
-        "Flipped270" | "flipped-270" => "flipped-270",
-        other => other,
-    }
-    .to_string()
 }
 
 fn non_empty(value: String) -> Option<String> {
@@ -194,7 +196,7 @@ struct RawLogicalOutput {
     width: u32,
     height: u32,
     scale: f64,
-    transform: String,
+    transform: Transform,
 }
 
 #[cfg(test)]
@@ -248,8 +250,11 @@ mod tests {
         assert_eq!(outputs[0].connector, "DP-1");
         assert_eq!(outputs[0].description, "Dell Inc. DELL U3419W 7VK66T2");
         assert_eq!(outputs[0].current_mode, Some(0));
-        assert_eq!(outputs[0].logical.as_ref().unwrap().transform, "normal");
-        assert!((outputs[0].modes[0].refresh_hz() - 59.973).abs() < f64::EPSILON);
+        assert_eq!(
+            outputs[0].logical.as_ref().unwrap().transform,
+            Transform::Normal
+        );
+        assert_eq!(outputs[0].modes[0].refresh_millihz, 59973);
     }
 
     #[test]

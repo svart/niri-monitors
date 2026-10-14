@@ -400,6 +400,7 @@ fn error_from_daemon(error: DaemonError) -> ControlResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Transform;
     use crate::model::{
         Config, DaemonConfig, MonitorMatcher, Position, ProfileCondition, ProfileOutput,
     };
@@ -724,7 +725,7 @@ mod tests {
                         ..MonitorMatcher::default()
                     },
                     enabled: Some(true),
-                    mode: Some("3440x1440@59.973".to_string()),
+                    mode: Some("3440x1440@59.973".parse().unwrap()),
                     scale: Some(1.5),
                     transform: None,
                     position: Some(Position { x: 0, y: 0 }),
@@ -790,7 +791,7 @@ position = {{ x = 0, y = 0 }}
                 width: 3440,
                 height: 1440,
                 scale: 1.0,
-                transform: "normal".to_string(),
+                transform: Transform::Normal,
             }),
             vrr_supported: true,
             vrr_enabled: false,

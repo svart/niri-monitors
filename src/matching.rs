@@ -109,6 +109,7 @@ fn serial_matches(expected: Option<&str>, actual: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Transform;
     use crate::model::{DaemonConfig, ProfileCondition};
     use crate::niri::output::{LogicalOutput, NiriMode};
 
@@ -239,7 +240,7 @@ mod tests {
                 width: 3440,
                 height: 1440,
                 scale: 1.0,
-                transform: "normal".to_string(),
+                transform: Transform::Normal,
             }),
             vrr_supported: true,
             vrr_enabled: false,

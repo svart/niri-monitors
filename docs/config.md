@@ -166,7 +166,7 @@ All other output fields are optional:
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `enabled` | boolean | Enable or disable the output. If `false`, no other settings from that output entry are applied. |
-| `mode` | string | `WIDTHxHEIGHT` or `WIDTHxHEIGHT@HZ`. The mode must exist on the connected output. If refresh is included, it is rounded to millihertz and matched exactly against niri's reported mode. Do not include a trailing `Hz`. |
+| `mode` | string | `WIDTHxHEIGHT` or `WIDTHxHEIGHT@HZ`. The mode must exist on the connected output. If refresh is included, it is rounded to millihertz and matched exactly against niri's reported mode. Do not include a trailing `Hz`. Saved configs write the refresh rate without trailing zeros, for example `60` instead of `60.000`. |
 | `scale` | number | Positive finite scale value. |
 | `transform` | string | Output transform. See valid values below. |
 | `position` | table | Logical position, for example `{ x = 3440, y = 0 }`. |
@@ -205,12 +205,13 @@ The config loader rejects:
 - Empty monitor matchers.
 - Non-positive or non-finite scale values.
 - Unknown transform strings.
+- Malformed `mode` strings.
 
 Apply planning rejects:
 
 - Output matchers that match multiple connected outputs.
 - Multiple output entries targeting the same connected output.
-- Modes that are malformed or unavailable on the connected output.
+- Modes that the connected output does not offer.
 - Profile layouts whose enabled outputs overlap with positive area after the plan. Monitors may touch edges.
 - Plans that would disable all connected outputs while `prevent_disable_all = true`.
 

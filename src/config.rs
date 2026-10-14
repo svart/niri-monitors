@@ -46,12 +46,6 @@ pub enum ConfigError {
         output_index: usize,
         scale: f64,
     },
-    #[error("profile {profile_id} output {output_index} has invalid transform {transform}")]
-    InvalidTransform {
-        profile_id: String,
-        output_index: usize,
-        transform: String,
-    },
     #[error(
         "profile {profile_id} {context} matcher {matcher_index} must set at least one match field"
     )]
@@ -181,16 +175,6 @@ pub fn validate_config(config: &Config) -> Result<(), ConfigError> {
                     scale,
                 });
             }
-
-            if let Some(transform) = &output.transform
-                && !is_valid_transform(transform)
-            {
-                return Err(ConfigError::InvalidTransform {
-                    profile_id: profile.id.clone(),
-                    output_index,
-                    transform: transform.clone(),
-                });
-            }
         }
     }
 
@@ -222,13 +206,6 @@ fn default_config_path_from_env(
     home.filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .map(|home| home.join(".config/niri-monitors/config.toml"))
-}
-
-pub fn is_valid_transform(transform: &str) -> bool {
-    matches!(
-        transform,
-        "normal" | "90" | "180" | "270" | "flipped" | "flipped-90" | "flipped-180" | "flipped-270"
-    )
 }
 
 fn validate_matcher(
@@ -379,7 +356,38 @@ transform = "sideways"
 "#;
 
         let error = parse_config(config, "bad.toml").expect_err("invalid transform should fail");
-        assert!(matches!(error, ConfigError::InvalidTransform { .. }));
+        assert!(matches!(error, ConfigError::Parse { .. }));
+        assert!(error.to_string().contains("sideways"));
+    }
+
+    #[test]
+    fn rejects_malformed_mode() {
+        let config = r#"
+version = 1
+
+[[profiles]]
+id = "home"
+name = "Home"
+
+[[profiles.outputs]]
+match = { connector = "DP-1" }
+mode = "3440x1440@60Hz"
+"#;
+
+        let error = parse_config(config, "bad.toml").expect_err("malformed mode should fail");
+        assert!(matches!(error, ConfigError::Parse { .. }));
+        assert!(error.to_string().contains("3440x1440@60Hz"));
+    }
+
+    #[test]
+    fn saves_mode_and_transform_in_config_spelling() {
+        let mut config = parse_config(EXAMPLE_CONFIG, "example.toml").unwrap();
+        config.profiles[0].outputs[1].transform = Some(crate::model::Transform::Flipped90);
+
+        let saved = toml::to_string_pretty(&config).unwrap();
+
+        assert!(saved.contains(r#"mode = "3440x1440@59.973""#));
+        assert!(saved.contains(r#"transform = "flipped-90""#));
     }
 
     #[test]

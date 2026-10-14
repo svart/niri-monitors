@@ -1,4 +1,4 @@
-use crate::model::Position;
+use crate::model::{Position, Transform};
 use crate::niri::output::{NiriOutput, NiriOutputParseError, parse_outputs_response_json};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -25,7 +25,7 @@ pub enum OutputAction {
         refresh_millihz: Option<u32>,
     },
     Scale(f64),
-    Transform(String),
+    Transform(Transform),
     Position(Position),
     Vrr(bool),
 }
@@ -135,7 +135,7 @@ fn output_action_json(action: &OutputAction) -> Value {
         }),
         OutputAction::Transform(transform) => json!({
             "Transform": {
-                "transform": transform_to_niri_json(transform),
+                "transform": transform.niri_name(),
             }
         }),
         OutputAction::Position(Position { x, y }) => json!({
@@ -156,20 +156,6 @@ fn output_action_json(action: &OutputAction) -> Value {
                 }
             }
         }),
-    }
-}
-
-fn transform_to_niri_json(transform: &str) -> &str {
-    match transform {
-        "normal" => "Normal",
-        "90" => "_90",
-        "180" => "_180",
-        "270" => "_270",
-        "flipped" => "Flipped",
-        "flipped-90" => "Flipped90",
-        "flipped-180" => "Flipped180",
-        "flipped-270" => "Flipped270",
-        other => other,
     }
 }
 
@@ -240,7 +226,7 @@ mod tests {
     #[test]
     fn encodes_transform_and_position_actions() {
         assert_eq!(
-            output_action_request("DP-1", &OutputAction::Transform("flipped-90".to_string())),
+            output_action_request("DP-1", &OutputAction::Transform(Transform::Flipped90)),
             json!({
                 "Output": {
                     "output": "DP-1",

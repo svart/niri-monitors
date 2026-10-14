@@ -1,22 +1,11 @@
 use crate::matching::matcher_matches_output;
-use crate::model::{MonitorMatcher, Position, Profile, ProfileOutput};
-use crate::niri::output::{NiriMode, NiriOutput};
+use crate::model::{ModeSpec, MonitorMatcher, Position, Profile, ProfileOutput, Transform};
+use crate::niri::output::NiriOutput;
 use egui::{Color32, RichText};
 
 const ERROR_COLOR: Color32 = Color32::from_rgb(184, 67, 67);
 const WARNING_COLOR: Color32 = Color32::from_rgb(184, 111, 36);
 const MUTED_TEXT: Color32 = Color32::from_rgb(146, 148, 160);
-
-const TRANSFORMS: &[&str] = &[
-    "normal",
-    "90",
-    "180",
-    "270",
-    "flipped",
-    "flipped-90",
-    "flipped-180",
-    "flipped-270",
-];
 
 pub fn show_output_strip(
     ui: &mut egui::Ui,
@@ -65,7 +54,7 @@ pub fn show_output_strip(
         ui.add_space(12.0);
         changed |= edit_scale_inline(ui, output, connected_output);
         ui.add_space(12.0);
-        changed |= edit_transform_inline(ui, output, connected_output, 150.0);
+        changed |= edit_transform_inline(ui, output, 150.0);
         ui.add_space(12.0);
         changed |= edit_position_inline(ui, output, connected_output);
     });
@@ -93,7 +82,9 @@ fn edit_mode_inline(
     let mut changed = false;
 
     if let Some(connected_output) = connected_output {
-        let selected = output.mode.clone().unwrap_or_else(|| "Default".to_owned());
+        let selected = output
+            .mode
+            .map_or_else(|| "Default".to_owned(), |mode| mode.to_string());
         egui::ComboBox::from_id_salt("selected_output_mode_strip")
             .selected_text(selected)
             .width(width)
@@ -105,34 +96,56 @@ fn edit_mode_inline(
                     output.mode = None;
                     changed = true;
                 }
-                for mode in &connected_output.modes {
-                    let mode_text = format_mode(*mode);
+                for &mode in &connected_output.modes {
+                    let mode = ModeSpec::from(mode);
                     if ui
-                        .selectable_label(
-                            output.mode.as_deref() == Some(mode_text.as_str()),
-                            &mode_text,
-                        )
+                        .selectable_label(output.mode == Some(mode), mode.to_string())
                         .clicked()
                     {
-                        output.mode = Some(mode_text);
+                        output.mode = Some(mode);
                         changed = true;
                     }
                 }
             });
     } else {
-        let mut text = output.mode.clone().unwrap_or_default();
-        changed = ui
-            .add_sized(
-                [width, ui.spacing().interact_size.y],
-                egui::TextEdit::singleline(&mut text),
-            )
-            .changed();
-        if changed {
-            let trimmed = text.trim();
-            output.mode = (!trimmed.is_empty()).then(|| trimmed.to_owned());
-        }
+        changed = edit_mode_text(ui, &mut output.mode, width);
     }
 
+    changed
+}
+
+/// Free-text mode field for an output that is not connected. A half-typed mode cannot be
+/// stored in the profile, so the typed text is kept in egui memory while the field has
+/// focus and the profile changes only when the text parses or is cleared.
+fn edit_mode_text(ui: &mut egui::Ui, mode: &mut Option<ModeSpec>, width: f32) -> bool {
+    let id = ui.id().with("mode_text");
+    let mut text = ui
+        .data_mut(|data| data.get_temp::<String>(id))
+        .unwrap_or_else(|| mode.map(|mode| mode.to_string()).unwrap_or_default());
+    let response = ui.add_sized(
+        [width, ui.spacing().interact_size.y],
+        egui::TextEdit::singleline(&mut text).hint_text("WIDTHxHEIGHT@HZ"),
+    );
+
+    let trimmed = text.trim();
+    let parsed = if trimmed.is_empty() {
+        Some(None)
+    } else {
+        trimmed.parse::<ModeSpec>().ok().map(Some)
+    };
+    let changed = response.changed() && parsed.is_some_and(|parsed| parsed != *mode);
+    if changed && let Some(parsed) = parsed {
+        *mode = parsed;
+    }
+
+    if response.has_focus() {
+        if parsed.is_none() {
+            ui.colored_label(ERROR_COLOR, "not a mode");
+        }
+        ui.data_mut(|data| data.insert_temp(id, text));
+    } else {
+        ui.data_mut(|data| data.remove::<String>(id));
+    }
     changed
 }
 
@@ -160,24 +173,10 @@ fn edit_scale_inline(
     changed
 }
 
-fn edit_transform_inline(
-    ui: &mut egui::Ui,
-    output: &mut ProfileOutput,
-    connected_output: Option<&NiriOutput>,
-    width: f32,
-) -> bool {
+fn edit_transform_inline(ui: &mut egui::Ui, output: &mut ProfileOutput, width: f32) -> bool {
     ui.label(RichText::new("Transform").color(MUTED_TEXT));
     let mut changed = false;
-    let selected = output
-        .transform
-        .as_deref()
-        .map(transform_label)
-        .or_else(|| {
-            connected_output
-                .and_then(|output| output.logical.as_ref())
-                .map(|_| "None")
-        })
-        .unwrap_or("None");
+    let selected = output.transform.map_or("None", transform_label);
 
     egui::ComboBox::from_id_salt("selected_output_transform_strip")
         .selected_text(selected)
@@ -190,13 +189,15 @@ fn edit_transform_inline(
                 output.transform = None;
                 changed = true;
             }
-            for transform in TRANSFORMS {
-                let label = transform_label(transform);
+            for transform in Transform::ALL {
                 if ui
-                    .selectable_label(output.transform.as_deref() == Some(*transform), label)
+                    .selectable_label(
+                        output.transform == Some(transform),
+                        transform_label(transform),
+                    )
                     .clicked()
                 {
-                    output.transform = Some((*transform).to_owned());
+                    output.transform = Some(transform);
                     changed = true;
                 }
             }
@@ -246,11 +247,10 @@ fn edit_position_inline(
     }
 }
 
-fn transform_label(transform: &str) -> &str {
-    if transform == "normal" {
-        "Normal"
-    } else {
-        transform
+fn transform_label(transform: Transform) -> &'static str {
+    match transform {
+        Transform::Normal => "Normal",
+        transform => transform.as_str(),
     }
 }
 
@@ -266,17 +266,11 @@ fn show_output_warnings(
         ui.colored_label(ERROR_COLOR, "Scale must be finite and greater than zero.");
     }
 
-    if let Some(transform) = &output.transform
-        && !TRANSFORMS.contains(&transform.as_str())
-    {
-        ui.colored_label(ERROR_COLOR, format!("Unsupported transform: {transform}"));
-    }
-
-    if let (Some(mode), Some(connected_output)) = (&output.mode, connected_output) {
+    if let (Some(mode), Some(connected_output)) = (output.mode, connected_output) {
         let mode_supported = connected_output
             .modes
             .iter()
-            .any(|connected_mode| format_mode(*connected_mode) == *mode);
+            .any(|connected_mode| connected_mode.matches(mode));
         if !mode_supported {
             ui.colored_label(
                 WARNING_COLOR,
@@ -304,32 +298,9 @@ fn matcher_summary(matcher: &MonitorMatcher) -> String {
         .unwrap_or_else(|| "empty matcher".to_owned())
 }
 
-fn format_mode(mode: NiriMode) -> String {
-    let mut refresh = format!("{:.3}", mode.refresh_hz());
-    while refresh.contains('.') && refresh.ends_with('0') {
-        refresh.pop();
-    }
-    if refresh.ends_with('.') {
-        refresh.pop();
-    }
-    format!("{}x{}@{}", mode.width, mode.height, refresh)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn formats_modes_without_hz_suffix() {
-        let mode = NiriMode {
-            width: 3440,
-            height: 1440,
-            refresh_millihz: 59973,
-            is_preferred: true,
-        };
-
-        assert_eq!(format_mode(mode), "3440x1440@59.973");
-    }
 
     #[test]
     fn matcher_summary_prefers_description() {

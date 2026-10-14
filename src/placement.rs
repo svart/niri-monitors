@@ -1,5 +1,5 @@
 use crate::matching::matcher_matches_output;
-use crate::model::{Position, Profile, ProfileOutput};
+use crate::model::{Position, Profile, ProfileOutput, Transform};
 use crate::niri::output::NiriOutput;
 
 const FALLBACK_WIDTH: u32 = 1920;
@@ -91,8 +91,8 @@ pub fn placed_output_rect(
 }
 
 /// Logical size of an output showing a `width`x`height` mode at `scale` and `transform`.
-pub fn logical_size(width: u32, height: u32, scale: f64, transform: &str) -> (u32, u32) {
-    if matches!(transform, "90" | "270" | "flipped-90" | "flipped-270") {
+pub fn logical_size(width: u32, height: u32, scale: f64, transform: Transform) -> (u32, u32) {
+    if transform.swaps_axes() {
         scale_size(height, width, scale)
     } else {
         scale_size(width, height, scale)
@@ -285,18 +285,16 @@ fn output_size(output: &ProfileOutput, connected_output: Option<&NiriOutput>) ->
                 .and_then(|index| connected_output.modes.get(index))
         })
         .map(|mode| (u32::from(mode.width), u32::from(mode.height)))
-        .or_else(|| output.mode.as_deref().and_then(parse_mode_size))
+        .or_else(|| {
+            output
+                .mode
+                .map(|mode| (u32::from(mode.width), u32::from(mode.height)))
+        })
     {
         return scale_size(width, height, scale);
     }
 
     (FALLBACK_WIDTH, FALLBACK_HEIGHT)
-}
-
-fn parse_mode_size(mode: &str) -> Option<(u32, u32)> {
-    let size = mode.split_once('@').map(|(size, _)| size).unwrap_or(mode);
-    let (width, height) = size.split_once('x')?;
-    Some((width.trim().parse().ok()?, height.trim().parse().ok()?))
 }
 
 fn scale_size(width: u32, height: u32, scale: f64) -> (u32, u32) {
@@ -411,7 +409,7 @@ mod tests {
         let profile = profile_with_output(ProfileOutput {
             matcher: matcher("Missing Display"),
             enabled: Some(true),
-            mode: Some("3000x2000@60".to_owned()),
+            mode: Some("3000x2000@60".parse().unwrap()),
             scale: Some(1.5),
             transform: None,
             position: None,
@@ -427,10 +425,22 @@ mod tests {
 
     #[test]
     fn logical_size_divides_by_scale_and_swaps_rotated_outputs() {
-        assert_eq!(logical_size(2560, 1440, 1.5, "normal"), (1707, 960));
-        assert_eq!(logical_size(2560, 1440, 1.0, "90"), (1440, 2560));
-        assert_eq!(logical_size(2560, 1440, 2.0, "flipped-270"), (720, 1280));
-        assert_eq!(logical_size(2560, 1440, 1.0, "flipped-180"), (2560, 1440));
+        assert_eq!(
+            logical_size(2560, 1440, 1.5, Transform::Normal),
+            (1707, 960)
+        );
+        assert_eq!(
+            logical_size(2560, 1440, 1.0, Transform::Rotate90),
+            (1440, 2560)
+        );
+        assert_eq!(
+            logical_size(2560, 1440, 2.0, Transform::Flipped270),
+            (720, 1280)
+        );
+        assert_eq!(
+            logical_size(2560, 1440, 1.0, Transform::Flipped180),
+            (2560, 1440)
+        );
     }
 
     #[test]
@@ -527,7 +537,7 @@ mod tests {
                 width: 2560,
                 height: 1440,
                 scale: 1.5,
-                transform: "normal".to_owned(),
+                transform: Transform::Normal,
             }),
             vrr_supported: false,
             vrr_enabled: false,

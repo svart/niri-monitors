@@ -1,6 +1,7 @@
-use crate::config::is_valid_transform;
 use crate::matching::matcher_matches_output;
-use crate::model::{Config, ManualOutputPlacement, Position, Profile, ProfileOutput};
+use crate::model::{
+    Config, ManualOutputPlacement, ModeSpec, Position, Profile, ProfileOutput, Transform,
+};
 use crate::niri::ipc::{NiriClient, NiriError, OutputAction};
 use crate::niri::output::{NiriMode, NiriOutput};
 use crate::placement::{
@@ -53,24 +54,13 @@ pub enum ApplyPlanError {
     },
     #[error("profile {profile_id} maps multiple output entries to connected output {output}")]
     DuplicateOutputTarget { profile_id: String, output: String },
-    #[error("profile {profile_id} output {output} has invalid scale {scale}")]
-    InvalidScale {
+    #[error(
+        "profile {profile_id} output {output} has mode {mode}, which the output does not offer"
+    )]
+    UnavailableMode {
         profile_id: String,
         output: String,
-        scale: f64,
-    },
-    #[error("profile {profile_id} output {output} has invalid transform {transform}")]
-    InvalidTransform {
-        profile_id: String,
-        output: String,
-        transform: String,
-    },
-    #[error("profile {profile_id} output {output} has invalid mode {mode}: {reason}")]
-    InvalidMode {
-        profile_id: String,
-        output: String,
-        mode: String,
-        reason: String,
+        mode: ModeSpec,
     },
     #[error("refusing to disable every connected output for profile {0}")]
     AllOutputsDisabled(String),
@@ -145,23 +135,6 @@ pub fn format_dry_run(plan: &ApplyPlan) -> String {
     }
 
     lines.join("\n")
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ModeSpec {
-    width: u16,
-    height: u16,
-    refresh_millihz: Option<u32>,
-}
-
-impl ModeSpec {
-    fn matches(self, mode: &NiriMode) -> bool {
-        mode.width == self.width
-            && mode.height == self.height
-            && self
-                .refresh_millihz
-                .is_none_or(|refresh| mode.refresh_millihz == refresh)
-    }
 }
 
 // niri may round a fractional scale to a nearby multiple of 1/120, so the reported
@@ -255,42 +228,42 @@ pub fn build_apply_plan(
         }
 
         let mut resized = false;
-        let mode_spec = profile_output
-            .mode
-            .as_deref()
-            .map(|mode| validate_mode(profile, &output_name, mode, &output.modes))
-            .transpose()?;
-        if let Some(mode_spec) = mode_spec
-            && !current_mode(output).is_some_and(|mode| mode_spec.matches(mode))
-        {
-            mode_actions.push(planned(
-                output_name.clone(),
-                OutputAction::Mode {
-                    width: mode_spec.width,
-                    height: mode_spec.height,
-                    refresh_millihz: mode_spec.refresh_millihz,
-                },
-            ));
-            resized = true;
-        }
-
-        if let Some(scale) = profile_output.scale {
-            validate_scale(profile, &output_name, scale)?;
-            if !current.is_some_and(|logical| (logical.scale - scale).abs() < SCALE_TOLERANCE) {
-                scale_actions.push(planned(output_name.clone(), OutputAction::Scale(scale)));
-                resized = true;
+        if let Some(mode) = profile_output.mode {
+            if !output.modes.iter().any(|available| available.matches(mode)) {
+                return Err(ApplyPlanError::UnavailableMode {
+                    profile_id: profile.id.clone(),
+                    output: output_name,
+                    mode,
+                });
             }
-        }
-
-        if let Some(transform) = &profile_output.transform {
-            validate_transform(profile, &output_name, transform)?;
-            if current.is_none_or(|logical| logical.transform != *transform) {
-                transform_actions.push(planned(
+            if !current_mode(output).is_some_and(|current_mode| current_mode.matches(mode)) {
+                mode_actions.push(planned(
                     output_name.clone(),
-                    OutputAction::Transform(transform.clone()),
+                    OutputAction::Mode {
+                        width: mode.width,
+                        height: mode.height,
+                        refresh_millihz: mode.refresh_millihz,
+                    },
                 ));
                 resized = true;
             }
+        }
+
+        if let Some(scale) = profile_output.scale
+            && !current.is_some_and(|logical| (logical.scale - scale).abs() < SCALE_TOLERANCE)
+        {
+            scale_actions.push(planned(output_name.clone(), OutputAction::Scale(scale)));
+            resized = true;
+        }
+
+        if let Some(transform) = profile_output.transform
+            && current.is_none_or(|logical| logical.transform != transform)
+        {
+            transform_actions.push(planned(
+                output_name.clone(),
+                OutputAction::Transform(transform),
+            ));
+            resized = true;
         }
 
         if let Some(vrr) = profile_output.vrr
@@ -305,7 +278,7 @@ pub fn build_apply_plan(
                 .position
                 .or(current_placement.and_then(|placement| placement.position)),
             size: if resized {
-                target_size(output, profile_output, mode_spec)
+                target_size(output, profile_output)
             } else {
                 current_placement.and_then(|placement| placement.size)
             },
@@ -361,14 +334,10 @@ fn current_mode(output: &NiriOutput) -> Option<&NiriMode> {
 /// Logical size `output` gets from the profile's mode, scale, and transform, falling back
 /// to its current settings. `None` when the mode or the scale is unknown, which happens
 /// when the profile enables an output without configuring both.
-fn target_size(
-    output: &NiriOutput,
-    profile_output: &ProfileOutput,
-    mode_spec: Option<ModeSpec>,
-) -> Option<(u32, u32)> {
+fn target_size(output: &NiriOutput, profile_output: &ProfileOutput) -> Option<(u32, u32)> {
     let current = output.logical.as_ref();
-    let (width, height) = match mode_spec {
-        Some(mode_spec) => (mode_spec.width, mode_spec.height),
+    let (width, height) = match profile_output.mode {
+        Some(mode) => (mode.width, mode.height),
         None => current_mode(output).map(|mode| (mode.width, mode.height))?,
     };
     let scale = profile_output
@@ -376,9 +345,8 @@ fn target_size(
         .or(current.map(|logical| logical.scale))?;
     let transform = profile_output
         .transform
-        .as_deref()
-        .or(current.map(|logical| logical.transform.as_str()))
-        .unwrap_or("normal");
+        .or(current.map(|logical| logical.transform))
+        .unwrap_or(Transform::Normal);
     Some(logical_size(
         u32::from(width),
         u32::from(height),
@@ -506,99 +474,6 @@ fn resolve_profile_output(
     }
 }
 
-fn validate_scale(profile: &Profile, output: &str, scale: f64) -> Result<(), ApplyPlanError> {
-    if scale.is_finite() && scale > 0.0 {
-        Ok(())
-    } else {
-        Err(ApplyPlanError::InvalidScale {
-            profile_id: profile.id.clone(),
-            output: output.to_string(),
-            scale,
-        })
-    }
-}
-
-fn validate_transform(
-    profile: &Profile,
-    output: &str,
-    transform: &str,
-) -> Result<(), ApplyPlanError> {
-    if is_valid_transform(transform) {
-        Ok(())
-    } else {
-        Err(ApplyPlanError::InvalidTransform {
-            profile_id: profile.id.clone(),
-            output: output.to_string(),
-            transform: transform.to_string(),
-        })
-    }
-}
-
-fn validate_mode(
-    profile: &Profile,
-    output: &str,
-    mode: &str,
-    modes: &[NiriMode],
-) -> Result<ModeSpec, ApplyPlanError> {
-    let mode_spec = parse_mode_spec(mode).map_err(|reason| ApplyPlanError::InvalidMode {
-        profile_id: profile.id.clone(),
-        output: output.to_string(),
-        mode: mode.to_string(),
-        reason,
-    })?;
-
-    if modes.iter().any(|available| mode_spec.matches(available)) {
-        Ok(mode_spec)
-    } else {
-        Err(ApplyPlanError::InvalidMode {
-            profile_id: profile.id.clone(),
-            output: output.to_string(),
-            mode: mode.to_string(),
-            reason: "mode is not available on this output".to_string(),
-        })
-    }
-}
-
-fn parse_mode_spec(mode: &str) -> Result<ModeSpec, String> {
-    let (dimensions, refresh) = mode
-        .split_once('@')
-        .map_or((mode, None), |(dimensions, refresh)| {
-            (dimensions, Some(refresh))
-        });
-    let (width, height) = dimensions
-        .split_once('x')
-        .ok_or_else(|| "expected WIDTHxHEIGHT[@HZ]".to_string())?;
-    let width = width
-        .parse::<u16>()
-        .map_err(|_| "width must fit u16".to_string())?;
-    let height = height
-        .parse::<u16>()
-        .map_err(|_| "height must fit u16".to_string())?;
-    let refresh_millihz = refresh.map(parse_refresh_millihz).transpose()?;
-
-    Ok(ModeSpec {
-        width,
-        height,
-        refresh_millihz,
-    })
-}
-
-fn parse_refresh_millihz(refresh: &str) -> Result<u32, String> {
-    let refresh = refresh
-        .parse::<f64>()
-        .map_err(|_| "refresh must be a number".to_string())?;
-    if !refresh.is_finite() || refresh <= 0.0 {
-        return Err("refresh must be finite and greater than zero".to_string());
-    }
-
-    let millihz = (refresh * 1000.0).round();
-    if millihz > f64::from(u32::MAX) {
-        return Err("refresh must fit u32 millihertz".to_string());
-    }
-
-    Ok(millihz as u32)
-}
-
 fn planned(output: String, action: OutputAction) -> PlannedOutputAction {
     PlannedOutputAction { output, action }
 }
@@ -607,13 +482,17 @@ fn describe_output_action(action: &OutputAction) -> String {
     match action {
         OutputAction::Enable => "enable".to_string(),
         OutputAction::Disable => "disable".to_string(),
-        OutputAction::Mode {
+        &OutputAction::Mode {
             width,
             height,
             refresh_millihz,
-        } => refresh_millihz.map_or_else(
-            || format!("mode {width}x{height}"),
-            |refresh| format!("mode {width}x{height}@{:.3}", f64::from(refresh) / 1000.0),
+        } => format!(
+            "mode {}",
+            ModeSpec {
+                width,
+                height,
+                refresh_millihz,
+            }
         ),
         OutputAction::Scale(scale) => format!("scale {scale}"),
         OutputAction::Transform(transform) => format!("transform {transform}"),
@@ -642,9 +521,9 @@ mod tests {
                 ProfileOutput {
                     matcher: matcher("DP-1"),
                     enabled: Some(true),
-                    mode: Some("3440x1440@59.973".to_string()),
+                    mode: Some("3440x1440@59.973".parse().unwrap()),
                     scale: Some(1.25),
-                    transform: Some("normal".to_string()),
+                    transform: Some(Transform::Normal),
                     position: Some(Position { x: 0, y: 0 }),
                     vrr: Some(true),
                 },
@@ -678,7 +557,7 @@ mod tests {
         dp1.current_mode = Some(1);
         let logical = dp1.logical.as_mut().expect("DP-1 should be enabled");
         logical.x = 100;
-        logical.transform = "90".to_string();
+        logical.transform = Transform::Rotate90;
         let outputs = vec![
             dp1,
             output("HDMI-A-1", true),
@@ -703,7 +582,7 @@ mod tests {
                 planned("DP-1".to_string(), OutputAction::Scale(1.25)),
                 planned(
                     "DP-1".to_string(),
-                    OutputAction::Transform("normal".to_string()),
+                    OutputAction::Transform(Transform::Normal),
                 ),
                 planned("DP-1".to_string(), OutputAction::Vrr(true)),
                 planned(
@@ -723,7 +602,7 @@ mod tests {
             ProfileOutput {
                 matcher: matcher("eDP-1"),
                 enabled: Some(true),
-                mode: Some("3440x1440@59.973".to_string()),
+                mode: Some("3440x1440@59.973".parse().unwrap()),
                 scale: Some(1.0),
                 transform: None,
                 position: Some(Position { x: 0, y: 0 }),
@@ -773,7 +652,7 @@ mod tests {
             ProfileOutput {
                 matcher: matcher("eDP-1"),
                 enabled: Some(true),
-                mode: Some("3440x1440@59.973".to_string()),
+                mode: Some("3440x1440@59.973".parse().unwrap()),
                 scale: Some(1.0),
                 transform: None,
                 position: Some(Position { x: 0, y: 0 }),
@@ -860,9 +739,9 @@ mod tests {
         let profile = profile_with_outputs(vec![ProfileOutput {
             matcher: matcher("DP-1"),
             enabled: Some(true),
-            mode: Some("3440x1440@59.973".to_string()),
+            mode: Some("3440x1440@59.973".parse().unwrap()),
             scale: Some(1.0),
-            transform: Some("normal".to_string()),
+            transform: Some(Transform::Normal),
             position: Some(Position { x: 0, y: 0 }),
             vrr: Some(false),
         }]);
@@ -879,9 +758,9 @@ mod tests {
         let profile = profile_with_outputs(vec![ProfileOutput {
             matcher: matcher("DP-1"),
             enabled: Some(true),
-            mode: Some("3440x1440@59.973".to_string()),
+            mode: Some("3440x1440@59.973".parse().unwrap()),
             scale: Some(1.25),
-            transform: Some("normal".to_string()),
+            transform: Some(Transform::Normal),
             position: Some(Position { x: 0, y: 0 }),
             vrr: Some(false),
         }]);
@@ -920,7 +799,7 @@ mod tests {
         let profile = profile_with_outputs(vec![ProfileOutput {
             matcher: matcher("DP-1"),
             enabled: None,
-            mode: Some("3440x1440".to_string()),
+            mode: Some("3440x1440".parse().unwrap()),
             scale: None,
             transform: None,
             position: None,
@@ -991,7 +870,7 @@ mod tests {
             outputs: vec![ProfileOutput {
                 matcher: matcher("DP-1"),
                 enabled: None,
-                mode: Some("1920x1080@60".to_string()),
+                mode: Some("1920x1080@60".parse().unwrap()),
                 scale: None,
                 transform: None,
                 position: None,
@@ -1002,7 +881,7 @@ mod tests {
 
         let error = build_apply_plan(&config, &profile, &outputs).expect_err("plan should fail");
 
-        assert!(matches!(error, ApplyPlanError::InvalidMode { .. }));
+        assert!(matches!(error, ApplyPlanError::UnavailableMode { .. }));
     }
 
     #[test]
@@ -1218,7 +1097,7 @@ mod tests {
                 width: 3440,
                 height: 1440,
                 scale: 1.0,
-                transform: "normal".to_string(),
+                transform: Transform::Normal,
             }),
             vrr_supported: true,
             vrr_enabled: false,
