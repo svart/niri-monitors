@@ -77,6 +77,7 @@ pub enum LiveOutputsState {
     Available(Vec<NiriOutput>),
 }
 
+#[derive(Default)]
 pub struct GuiApp {
     config_path: Option<PathBuf>,
     config: Option<Config>,
@@ -125,86 +126,28 @@ impl GuiApp {
     fn from_load_error(config_path: PathBuf, error: String) -> Self {
         Self {
             config_path: Some(config_path),
-            config: None,
-            original_config: None,
-            validation_error: None,
             load_error: Some(error),
-            save_error: None,
-            last_save_message: None,
-            action_error: None,
-            action_message: None,
-            preview_data: None,
-            selected_profile_id: None,
-            pending_delete_profile_id: None,
-            renaming_profile: false,
-            canvas: CanvasState::default(),
-            runtime_canvas: CanvasState::default(),
-            manual_layout: ManualLayoutDraft::default(),
-            daemon: DaemonConnectionState::Checking,
-            live_outputs: LiveOutputsState::Checking,
-            daemon_status_rx: None,
-            live_outputs_rx: None,
-            last_daemon_poll: None,
-            last_live_output_poll: None,
+            ..Self::default()
         }
     }
 
     fn from_loaded_config(config_path: PathBuf, config: Config) -> Self {
-        let selected_profile_id = config.profiles.first().map(|profile| profile.id.clone());
-        let validation_error = validate_config(&config)
-            .err()
-            .map(|error| error.to_string());
-
         Self {
             config_path: Some(config_path),
+            selected_profile_id: config.profiles.first().map(|profile| profile.id.clone()),
+            validation_error: validate_config(&config)
+                .err()
+                .map(|error| error.to_string()),
             original_config: Some(config.clone()),
             config: Some(config),
-            validation_error,
-            load_error: None,
-            save_error: None,
-            last_save_message: None,
-            action_error: None,
-            action_message: None,
-            preview_data: None,
-            selected_profile_id,
-            pending_delete_profile_id: None,
-            renaming_profile: false,
-            canvas: CanvasState::default(),
-            runtime_canvas: CanvasState::default(),
-            manual_layout: ManualLayoutDraft::default(),
-            daemon: DaemonConnectionState::Checking,
-            live_outputs: LiveOutputsState::Checking,
-            daemon_status_rx: None,
-            live_outputs_rx: None,
-            last_daemon_poll: None,
-            last_live_output_poll: None,
+            ..Self::default()
         }
     }
 
     fn from_startup_error(error: String) -> Self {
         Self {
-            config_path: None,
-            config: None,
-            original_config: None,
-            validation_error: None,
             load_error: Some(error),
-            save_error: None,
-            last_save_message: None,
-            action_error: None,
-            action_message: None,
-            preview_data: None,
-            selected_profile_id: None,
-            pending_delete_profile_id: None,
-            renaming_profile: false,
-            canvas: CanvasState::default(),
-            runtime_canvas: CanvasState::default(),
-            manual_layout: ManualLayoutDraft::default(),
-            daemon: DaemonConnectionState::Checking,
-            live_outputs: LiveOutputsState::Checking,
-            daemon_status_rx: None,
-            live_outputs_rx: None,
-            last_daemon_poll: None,
-            last_live_output_poll: None,
+            ..Self::default()
         }
     }
 
