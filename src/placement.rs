@@ -58,18 +58,45 @@ pub fn derive_connected_output_rects(outputs: &[NiriOutput]) -> Vec<OutputRect> 
         .enumerate()
         .filter_map(|(output_index, output)| {
             let logical = output.logical.as_ref()?;
-            Some(OutputRect {
+            Some(placed_output_rect(
                 output_index,
-                x: logical.x,
-                y: logical.y,
-                width: logical.width,
-                height: logical.height,
-                enabled: true,
-                connected: true,
-                label: output_label(output),
-            })
+                output,
+                Position {
+                    x: logical.x,
+                    y: logical.y,
+                },
+                (logical.width, logical.height),
+            ))
         })
         .collect()
+}
+
+/// Rectangle for the enabled, connected `output` at `position` with logical `size`.
+pub fn placed_output_rect(
+    output_index: usize,
+    output: &NiriOutput,
+    position: Position,
+    (width, height): (u32, u32),
+) -> OutputRect {
+    OutputRect {
+        output_index,
+        x: position.x,
+        y: position.y,
+        width,
+        height,
+        enabled: true,
+        connected: true,
+        label: output_label(output),
+    }
+}
+
+/// Logical size of an output showing a `width`x`height` mode at `scale` and `transform`.
+pub fn logical_size(width: u32, height: u32, scale: f64, transform: &str) -> (u32, u32) {
+    if matches!(transform, "90" | "270" | "flipped-90" | "flipped-270") {
+        scale_size(height, width, scale)
+    } else {
+        scale_size(width, height, scale)
+    }
 }
 
 pub fn snap_position(
@@ -396,6 +423,14 @@ mod tests {
         assert_eq!(rects[0].width, 2000);
         assert_eq!(rects[0].height, 1333);
         assert!(!rects[0].connected);
+    }
+
+    #[test]
+    fn logical_size_divides_by_scale_and_swaps_rotated_outputs() {
+        assert_eq!(logical_size(2560, 1440, 1.5, "normal"), (1707, 960));
+        assert_eq!(logical_size(2560, 1440, 1.0, "90"), (1440, 2560));
+        assert_eq!(logical_size(2560, 1440, 2.0, "flipped-270"), (720, 1280));
+        assert_eq!(logical_size(2560, 1440, 1.0, "flipped-180"), (2560, 1440));
     }
 
     #[test]

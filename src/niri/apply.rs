@@ -4,10 +4,10 @@ use crate::model::{Config, Position, Profile, ProfileOutput};
 use crate::niri::ipc::{NiriClient, NiriError, OutputAction};
 use crate::niri::output::{NiriMode, NiriOutput};
 use crate::placement::{
-    derive_connected_output_rects, first_overlap_message, normalize_output_rect_positions,
+    OutputRect, first_overlap_message, logical_size, normalize_output_rect_positions,
+    placed_output_rect,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -153,6 +153,27 @@ impl ModeSpec {
 // scale can differ slightly from the configured one. Within half a step counts as applied.
 const SCALE_TOLERANCE: f64 = 1.0 / 240.0;
 
+/// Where an output that is enabled after the plan ends up. A `None` position means niri
+/// places the output itself; a `None` size means it is only known once niri applies it.
+#[derive(Debug, Clone, Copy)]
+struct Placement {
+    position: Option<Position>,
+    size: Option<(u32, u32)>,
+}
+
+impl Placement {
+    fn current(output: &NiriOutput) -> Option<Self> {
+        let logical = output.logical.as_ref()?;
+        Some(Self {
+            position: Some(Position {
+                x: logical.x,
+                y: logical.y,
+            }),
+            size: Some((logical.width, logical.height)),
+        })
+    }
+}
+
 /// Builds the actions that move the connected outputs to `profile`.
 ///
 /// Only settings that differ from the current output state produce actions, so a plan
@@ -163,22 +184,19 @@ pub fn build_apply_plan(
     outputs: &[NiriOutput],
 ) -> Result<ApplyPlan, ApplyPlanError> {
     let mut warnings = Vec::new();
-    let mut targets = HashSet::new();
-    let mut final_enabled: HashMap<String, bool> = outputs
-        .iter()
-        .map(|output| (output.connector.clone(), output.logical.is_some()))
-        .collect();
+    let mut mentioned = vec![false; outputs.len()];
+    // Placement of each connected output after the plan; `None` means disabled.
+    let mut placements: Vec<Option<Placement>> = outputs.iter().map(Placement::current).collect();
 
     let mut enable_actions = Vec::new();
     let mut mode_actions = Vec::new();
     let mut scale_actions = Vec::new();
     let mut transform_actions = Vec::new();
     let mut vrr_actions = Vec::new();
-    let mut position_actions = Vec::new();
     let mut disable_actions = Vec::new();
 
     for (output_index, profile_output) in profile.outputs.iter().enumerate() {
-        let Some(output) = resolve_profile_output(
+        let Some(index) = resolve_profile_output(
             profile,
             output_index,
             profile_output,
@@ -188,8 +206,9 @@ pub fn build_apply_plan(
         else {
             continue;
         };
+        let output = &outputs[index];
 
-        if !targets.insert(output.connector.clone()) {
+        if std::mem::replace(&mut mentioned[index], true) {
             return Err(ApplyPlanError::DuplicateOutputTarget {
                 profile_id: profile.id.clone(),
                 output: output.connector.clone(),
@@ -199,7 +218,7 @@ pub fn build_apply_plan(
         let output_name = output.connector.clone();
         let current = output.logical.as_ref();
         if profile_output.enabled == Some(false) {
-            final_enabled.insert(output_name.clone(), false);
+            placements[index] = None;
             if current.is_some() {
                 disable_actions.push(planned(output_name, OutputAction::Disable));
             }
@@ -212,37 +231,39 @@ pub fn build_apply_plan(
             || profile_output.transform.is_some()
             || profile_output.position.is_some()
             || profile_output.vrr.is_some();
-
-        if requires_enabled {
-            final_enabled.insert(output_name.clone(), true);
+        if !requires_enabled {
+            continue;
         }
 
-        if requires_enabled && current.is_none() {
+        if current.is_none() {
             enable_actions.push(planned(output_name.clone(), OutputAction::Enable));
         }
 
-        if let Some(mode) = &profile_output.mode {
-            let mode_spec = validate_mode(profile, &output_name, mode, &output.modes)?;
-            let current_mode = output
-                .current_mode
-                .filter(|_| current.is_some())
-                .and_then(|index| output.modes.get(index));
-            if !current_mode.is_some_and(|current_mode| mode_spec.matches(current_mode)) {
-                mode_actions.push(planned(
-                    output_name.clone(),
-                    OutputAction::Mode {
-                        width: mode_spec.width,
-                        height: mode_spec.height,
-                        refresh_millihz: mode_spec.refresh_millihz,
-                    },
-                ));
-            }
+        let mut resized = false;
+        let mode_spec = profile_output
+            .mode
+            .as_deref()
+            .map(|mode| validate_mode(profile, &output_name, mode, &output.modes))
+            .transpose()?;
+        if let Some(mode_spec) = mode_spec
+            && !current_mode(output).is_some_and(|mode| mode_spec.matches(mode))
+        {
+            mode_actions.push(planned(
+                output_name.clone(),
+                OutputAction::Mode {
+                    width: mode_spec.width,
+                    height: mode_spec.height,
+                    refresh_millihz: mode_spec.refresh_millihz,
+                },
+            ));
+            resized = true;
         }
 
         if let Some(scale) = profile_output.scale {
             validate_scale(profile, &output_name, scale)?;
             if !current.is_some_and(|logical| (logical.scale - scale).abs() < SCALE_TOLERANCE) {
                 scale_actions.push(planned(output_name.clone(), OutputAction::Scale(scale)));
+                resized = true;
             }
         }
 
@@ -253,22 +274,31 @@ pub fn build_apply_plan(
                     output_name.clone(),
                     OutputAction::Transform(transform.clone()),
                 ));
+                resized = true;
             }
         }
 
         if let Some(vrr) = profile_output.vrr
             && (current.is_none() || output.vrr_enabled != vrr)
         {
-            vrr_actions.push(planned(output_name.clone(), OutputAction::Vrr(vrr)));
+            vrr_actions.push(planned(output_name, OutputAction::Vrr(vrr)));
         }
 
-        if let Some(position) = profile_output.position {
-            position_actions.push(planned(output_name, OutputAction::Position(position)));
-        }
+        let current_placement = Placement::current(output);
+        placements[index] = Some(Placement {
+            position: profile_output
+                .position
+                .or(current_placement.and_then(|placement| placement.position)),
+            size: if resized {
+                target_size(output, profile_output, mode_spec)
+            } else {
+                current_placement.and_then(|placement| placement.size)
+            },
+        });
     }
 
-    for output in outputs {
-        if !targets.contains(&output.connector) {
+    for (output, mentioned) in outputs.iter().zip(&mentioned) {
+        if !mentioned {
             warnings.push(format!(
                 "connected output {} ({}) is not mentioned by profile {}",
                 output.connector, output.description, profile.id
@@ -278,12 +308,12 @@ pub fn build_apply_plan(
 
     if config.daemon.prevent_disable_all
         && !outputs.is_empty()
-        && final_enabled.values().all(|enabled| !enabled)
+        && placements.iter().all(Option::is_none)
     {
         return Err(ApplyPlanError::AllOutputsDisabled(profile.id.clone()));
     }
 
-    normalize_position_actions(outputs, &disable_actions, &mut position_actions);
+    let position_actions = plan_positions(profile, outputs, &placements)?;
 
     let mut actions = Vec::new();
     actions.extend(enable_actions);
@@ -294,8 +324,6 @@ pub fn build_apply_plan(
     actions.extend(position_actions);
     actions.extend(disable_actions);
 
-    validate_non_overlapping_layout(profile, outputs, &actions)?;
-
     Ok(ApplyPlan {
         profile_id: profile.id.clone(),
         actions,
@@ -303,104 +331,68 @@ pub fn build_apply_plan(
     })
 }
 
-fn normalize_position_actions(
-    outputs: &[NiriOutput],
-    disable_actions: &[PlannedOutputAction],
-    position_actions: &mut Vec<PlannedOutputAction>,
-) {
-    let mut rects = derive_connected_output_rects(outputs);
-
-    for disable_action in disable_actions {
-        rects.retain(|rect| {
-            outputs
-                .get(rect.output_index)
-                .is_none_or(|output| output.connector != disable_action.output)
-        });
-    }
-
-    for position_action in position_actions.iter() {
-        let OutputAction::Position(position) = &position_action.action else {
-            continue;
-        };
-
-        if let Some(rect) = rects.iter_mut().find(|rect| {
-            outputs
-                .get(rect.output_index)
-                .is_some_and(|output| output.connector == position_action.output)
-        }) {
-            rect.x = position.x;
-            rect.y = position.y;
-        }
-    }
-
-    normalize_output_rect_positions(&mut rects);
-
-    for rect in rects {
-        let Some(output) = outputs.get(rect.output_index) else {
-            continue;
-        };
-        let normalized = OutputAction::Position(Position {
-            x: rect.x,
-            y: rect.y,
-        });
-
-        match position_actions
-            .iter_mut()
-            .find(|action| action.output == output.connector)
-        {
-            Some(position_action) => position_action.action = normalized,
-            None => position_actions.push(planned(output.connector.clone(), normalized)),
-        }
-    }
-
-    position_actions.retain(|action| !is_current_position(outputs, action));
+fn current_mode(output: &NiriOutput) -> Option<&NiriMode> {
+    output
+        .current_mode
+        .filter(|_| output.logical.is_some())
+        .and_then(|index| output.modes.get(index))
 }
 
-fn is_current_position(outputs: &[NiriOutput], action: &PlannedOutputAction) -> bool {
-    let OutputAction::Position(position) = &action.action else {
-        return false;
+/// Logical size `output` gets from the profile's mode, scale, and transform, falling back
+/// to its current settings. `None` when the mode or the scale is unknown, which happens
+/// when the profile enables an output without configuring both.
+fn target_size(
+    output: &NiriOutput,
+    profile_output: &ProfileOutput,
+    mode_spec: Option<ModeSpec>,
+) -> Option<(u32, u32)> {
+    let current = output.logical.as_ref();
+    let (width, height) = match mode_spec {
+        Some(mode_spec) => (mode_spec.width, mode_spec.height),
+        None => current_mode(output).map(|mode| (mode.width, mode.height))?,
     };
-
-    outputs
-        .iter()
-        .find(|output| output.connector == action.output)
-        .and_then(|output| output.logical.as_ref())
-        .is_some_and(|logical| logical.x == position.x && logical.y == position.y)
+    let scale = profile_output
+        .scale
+        .or(current.map(|logical| logical.scale))?;
+    let transform = profile_output
+        .transform
+        .as_deref()
+        .or(current.map(|logical| logical.transform.as_str()))
+        .unwrap_or("normal");
+    Some(logical_size(
+        u32::from(width),
+        u32::from(height),
+        scale,
+        transform,
+    ))
 }
 
-fn validate_non_overlapping_layout(
+/// Normalizes the layout the outputs have after the plan, rejects overlaps, and returns
+/// the position actions needed to reach it.
+///
+/// Outputs that niri places itself (enabled without a position) are left out. An output
+/// with an unknown size is checked by its top-left corner only, because it covers at least
+/// that point.
+fn plan_positions(
     profile: &Profile,
     outputs: &[NiriOutput],
-    actions: &[PlannedOutputAction],
-) -> Result<(), ApplyPlanError> {
-    let mut rects = derive_connected_output_rects(outputs);
-
-    for planned_action in actions {
-        match &planned_action.action {
-            OutputAction::Disable => {
-                rects.retain(|rect| {
-                    outputs
-                        .get(rect.output_index)
-                        .is_none_or(|output| output.connector != planned_action.output)
-                });
-            }
-            OutputAction::Position(position) => {
-                if let Some(rect) = rects.iter_mut().find(|rect| {
-                    outputs
-                        .get(rect.output_index)
-                        .is_some_and(|output| output.connector == planned_action.output)
-                }) {
-                    rect.x = position.x;
-                    rect.y = position.y;
-                }
-            }
-            OutputAction::Enable
-            | OutputAction::Mode { .. }
-            | OutputAction::Scale(_)
-            | OutputAction::Transform(_)
-            | OutputAction::Vrr(_) => {}
-        }
-    }
+    placements: &[Option<Placement>],
+) -> Result<Vec<PlannedOutputAction>, ApplyPlanError> {
+    let mut rects: Vec<OutputRect> = outputs
+        .iter()
+        .zip(placements)
+        .enumerate()
+        .filter_map(|(index, (output, placement))| {
+            let placement = (*placement)?;
+            Some(placed_output_rect(
+                index,
+                output,
+                placement.position?,
+                placement.size.unwrap_or((1, 1)),
+            ))
+        })
+        .collect();
+    normalize_output_rect_positions(&mut rects);
 
     if let Some(message) = first_overlap_message(&rects) {
         return Err(ApplyPlanError::OverlappingLayout {
@@ -409,19 +401,37 @@ fn validate_non_overlapping_layout(
         });
     }
 
-    Ok(())
+    Ok(rects
+        .iter()
+        .filter_map(|rect| {
+            let output = &outputs[rect.output_index];
+            let position = Position {
+                x: rect.x,
+                y: rect.y,
+            };
+            let unchanged = output
+                .logical
+                .as_ref()
+                .is_some_and(|logical| logical.x == position.x && logical.y == position.y);
+            (!unchanged)
+                .then(|| planned(output.connector.clone(), OutputAction::Position(position)))
+        })
+        .collect())
 }
 
-fn resolve_profile_output<'a>(
+/// Index in `outputs` of the one connected output that `profile_output` matches.
+fn resolve_profile_output(
     profile: &Profile,
     output_index: usize,
     profile_output: &ProfileOutput,
-    outputs: &'a [NiriOutput],
+    outputs: &[NiriOutput],
     warnings: &mut Vec<String>,
-) -> Result<Option<&'a NiriOutput>, ApplyPlanError> {
-    let matches: Vec<&NiriOutput> = outputs
+) -> Result<Option<usize>, ApplyPlanError> {
+    let matches: Vec<usize> = outputs
         .iter()
-        .filter(|output| matcher_matches_output(&profile_output.matcher, output))
+        .enumerate()
+        .filter(|(_, output)| matcher_matches_output(&profile_output.matcher, output))
+        .map(|(index, _)| index)
         .collect();
 
     match matches.as_slice() {
@@ -432,13 +442,13 @@ fn resolve_profile_output<'a>(
             ));
             Ok(None)
         }
-        [output] => Ok(Some(output)),
+        [index] => Ok(Some(*index)),
         matches => Err(ApplyPlanError::AmbiguousMatcher {
             profile_id: profile.id.clone(),
             output_index,
             matches: matches
                 .iter()
-                .map(|output| output.connector.clone())
+                .map(|&index| outputs[index].connector.clone())
                 .collect(),
         }),
     }
@@ -652,6 +662,144 @@ mod tests {
             ]
         );
         assert_eq!(plan.warnings.len(), 1);
+    }
+
+    #[test]
+    fn enabling_an_output_keeps_the_side_by_side_layout() {
+        let config = config(true);
+        let profile = profile_with_outputs(vec![
+            ProfileOutput {
+                matcher: matcher("eDP-1"),
+                enabled: Some(true),
+                mode: Some("3440x1440@59.973".to_string()),
+                scale: Some(1.0),
+                transform: None,
+                position: Some(Position { x: 0, y: 0 }),
+                vrr: None,
+            },
+            ProfileOutput {
+                matcher: matcher("DP-1"),
+                enabled: Some(true),
+                mode: None,
+                scale: None,
+                transform: None,
+                position: Some(Position { x: 3_440, y: 0 }),
+                vrr: None,
+            },
+        ]);
+        let mut dp1 = output("DP-1", true);
+        dp1.logical.as_mut().expect("DP-1 should be enabled").x = 3_440;
+        let outputs = vec![dp1, output("eDP-1", false)];
+
+        let plan = build_apply_plan(&config, &profile, &outputs).expect("plan should build");
+
+        assert_eq!(
+            plan.actions,
+            vec![
+                planned("eDP-1".to_string(), OutputAction::Enable),
+                planned(
+                    "eDP-1".to_string(),
+                    OutputAction::Mode {
+                        width: 3440,
+                        height: 1440,
+                        refresh_millihz: Some(59973),
+                    },
+                ),
+                planned("eDP-1".to_string(), OutputAction::Scale(1.0)),
+                planned(
+                    "eDP-1".to_string(),
+                    OutputAction::Position(Position { x: 0, y: 0 }),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_overlap_with_an_output_being_enabled() {
+        let config = config(true);
+        let profile = profile_with_outputs(vec![
+            ProfileOutput {
+                matcher: matcher("eDP-1"),
+                enabled: Some(true),
+                mode: Some("3440x1440@59.973".to_string()),
+                scale: Some(1.0),
+                transform: None,
+                position: Some(Position { x: 0, y: 0 }),
+                vrr: None,
+            },
+            ProfileOutput {
+                matcher: matcher("DP-1"),
+                enabled: Some(true),
+                mode: None,
+                scale: None,
+                transform: None,
+                position: Some(Position { x: 1_000, y: 0 }),
+                vrr: None,
+            },
+        ]);
+        let outputs = vec![output("DP-1", true), output("eDP-1", false)];
+
+        let error = build_apply_plan(&config, &profile, &outputs).expect_err("plan should fail");
+
+        assert!(matches!(error, ApplyPlanError::OverlappingLayout { .. }));
+    }
+
+    #[test]
+    fn checks_only_the_corner_of_an_enabled_output_with_unknown_size() {
+        let config = config(true);
+        let profile = profile_with_outputs(vec![ProfileOutput {
+            matcher: matcher("eDP-1"),
+            enabled: Some(true),
+            mode: None,
+            scale: None,
+            transform: None,
+            position: Some(Position { x: 100, y: 100 }),
+            vrr: None,
+        }]);
+        let inside = vec![output("DP-1", true), output("eDP-1", false)];
+        let mut dp1_right = output("DP-1", true);
+        dp1_right
+            .logical
+            .as_mut()
+            .expect("DP-1 should be enabled")
+            .x = 101;
+        let next_to = vec![dp1_right, output("eDP-1", false)];
+
+        let error = build_apply_plan(&config, &profile, &inside)
+            .expect_err("corner inside DP-1 should overlap");
+        let plan = build_apply_plan(&config, &profile, &next_to)
+            .expect("corner outside DP-1 should not overlap");
+
+        assert!(matches!(error, ApplyPlanError::OverlappingLayout { .. }));
+        assert!(plan.actions.contains(&planned(
+            "eDP-1".to_string(),
+            OutputAction::Position(Position { x: 0, y: 100 })
+        )));
+    }
+
+    #[test]
+    fn overlap_check_uses_the_size_after_a_scale_change() {
+        let config = config(true);
+        let profile = profile_with_outputs(vec![ProfileOutput {
+            matcher: matcher("DP-1"),
+            enabled: None,
+            mode: None,
+            scale: Some(1.0),
+            transform: None,
+            position: None,
+            vrr: None,
+        }]);
+        let mut dp1 = output("DP-1", true);
+        let logical = dp1.logical.as_mut().expect("DP-1 should be enabled");
+        logical.scale = 2.0;
+        logical.width = 1_720;
+        logical.height = 720;
+        let mut dp2 = output("DP-2", true);
+        dp2.logical.as_mut().expect("DP-2 should be enabled").x = 1_720;
+
+        let error = build_apply_plan(&config, &profile, &[dp1, dp2]).expect_err("plan should fail");
+
+        assert!(matches!(error, ApplyPlanError::OverlappingLayout { .. }));
     }
 
     #[test]

@@ -211,10 +211,17 @@ Apply planning rejects:
 - Output matchers that match multiple connected outputs.
 - Multiple output entries targeting the same connected output.
 - Modes that are malformed or unavailable on the connected output.
-- Profile layouts whose enabled outputs have known live rectangles that overlap with positive area. Monitors may touch edges.
+- Profile layouts whose enabled outputs overlap with positive area after the plan. Monitors may touch edges.
 - Plans that would disable all connected outputs while `prevent_disable_all = true`.
 
-Before profile or manual-layout positions are applied, enabled outputs with live logical rectangles are shifted as a group so the enclosing layout rectangle starts at logical coordinate `0,0`. This preserves relative placement while avoiding negative final coordinates. If only some positions are configured, the planner may add position actions for other currently enabled outputs so the whole known layout stays normalized.
+The planner checks the layout that the outputs have after the plan, not the current one:
+
+- Outputs that the profile disables are left out, and outputs that the profile enables are included.
+- An output keeps its current position unless the profile sets one. An output that the profile enables without a `position` is placed by niri and is not checked.
+- An output whose mode, scale, or transform changes is checked at its new logical size. A 90 or 270 degree transform swaps width and height.
+- An output that the profile enables is checked at full size only when the profile sets both its `mode` and `scale`. Otherwise niri chooses them, so only its top-left corner is checked.
+
+Before profile or manual-layout positions are applied, the enabled outputs are shifted as a group so the enclosing layout rectangle starts at logical coordinate `0,0`. This preserves relative placement while avoiding negative final coordinates. If only some positions are configured, the planner may add position actions for other enabled outputs so the whole known layout stays normalized.
 
 Use dry-run before applying a new profile:
 
