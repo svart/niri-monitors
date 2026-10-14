@@ -7,6 +7,7 @@ use crate::gui::canvas::{
 };
 use crate::gui::daemon_client::{DaemonClient, DaemonConnectionState, fetch_daemon_status};
 use crate::gui::output_editor::show_output_strip;
+use crate::gui::poller::Poller;
 use crate::gui::profile_list::{build_new_profile, remove_profile};
 use crate::model::{Config, ManualOutputPlacement, Profile};
 use crate::niri::ipc::{NiriClient, OutputAction, SocketNiriClient};
@@ -14,9 +15,7 @@ use crate::niri::output::NiriOutput;
 use eframe::egui;
 use eframe::egui::{Color32, RichText, Stroke, Vec2};
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const DAEMON_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const LIVE_OUTPUT_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -97,10 +96,8 @@ pub struct GuiApp {
     manual_layout: ManualLayoutDraft,
     daemon: DaemonConnectionState,
     live_outputs: LiveOutputsState,
-    daemon_status_rx: Option<Receiver<DaemonConnectionState>>,
-    live_outputs_rx: Option<Receiver<LiveOutputsState>>,
-    last_daemon_poll: Option<Instant>,
-    last_live_output_poll: Option<Instant>,
+    daemon_poller: Poller<DaemonConnectionState>,
+    live_outputs_poller: Poller<LiveOutputsState>,
 }
 
 impl GuiApp {
@@ -379,101 +376,39 @@ impl GuiApp {
         }
     }
 
-    fn refresh_daemon_status_if_needed(&mut self) {
-        self.collect_daemon_status();
-
-        if self.daemon_status_rx.is_some() {
-            return;
-        }
-
-        let should_poll = self
-            .last_daemon_poll
-            .map(|last_poll| last_poll.elapsed() >= DAEMON_POLL_INTERVAL)
-            .unwrap_or(true);
-        if should_poll {
-            self.queue_daemon_status_refresh();
-        }
-    }
-
-    fn refresh_live_outputs_if_needed(&mut self) {
-        self.collect_live_outputs();
-
-        if self.live_outputs_rx.is_some() {
-            return;
-        }
-
-        let should_poll = self
-            .last_live_output_poll
-            .map(|last_poll| last_poll.elapsed() >= LIVE_OUTPUT_POLL_INTERVAL)
-            .unwrap_or(true);
-        if should_poll {
-            self.queue_live_outputs_refresh();
-        }
-    }
-
-    fn collect_daemon_status(&mut self) {
-        let status = self
-            .daemon_status_rx
-            .as_ref()
-            .map(|receiver| receiver.try_recv());
-
-        match status {
-            Some(Ok(status)) => {
-                self.daemon = status;
-                self.daemon_status_rx = None;
-            }
-            Some(Err(TryRecvError::Disconnected)) => {
+    fn refresh_daemon_status(&mut self) {
+        match self
+            .daemon_poller
+            .poll(DAEMON_POLL_INTERVAL, fetch_daemon_status)
+        {
+            Some(Ok(status)) => self.daemon = status,
+            Some(Err(_)) => {
                 self.daemon = DaemonConnectionState::Offline {
                     message: "daemon status thread disconnected".to_owned(),
                 };
-                self.daemon_status_rx = None;
             }
-            Some(Err(TryRecvError::Empty)) | None => {}
+            None => {}
         }
     }
 
-    fn collect_live_outputs(&mut self) {
-        let status = self
-            .live_outputs_rx
-            .as_ref()
-            .map(|receiver| receiver.try_recv());
-
-        match status {
+    fn refresh_live_outputs(&mut self) {
+        match self
+            .live_outputs_poller
+            .poll(LIVE_OUTPUT_POLL_INTERVAL, fetch_live_outputs)
+        {
             Some(Ok(status)) => {
                 if let LiveOutputsState::Available(outputs) = &status {
                     self.manual_layout.sync_from_outputs(outputs);
                 }
                 self.live_outputs = status;
-                self.live_outputs_rx = None;
             }
-            Some(Err(TryRecvError::Disconnected)) => {
+            Some(Err(_)) => {
                 self.live_outputs = LiveOutputsState::Offline {
                     message: "niri status thread disconnected".to_owned(),
                 };
-                self.live_outputs_rx = None;
             }
-            Some(Err(TryRecvError::Empty)) | None => {}
+            None => {}
         }
-    }
-
-    fn queue_daemon_status_refresh(&mut self) {
-        let (sender, receiver) = mpsc::channel();
-        self.daemon_status_rx = Some(receiver);
-        self.last_daemon_poll = Some(Instant::now());
-
-        thread::spawn(move || {
-            let _ = sender.send(fetch_daemon_status());
-        });
-    }
-
-    fn queue_live_outputs_refresh(&mut self) {
-        let (sender, receiver) = mpsc::channel();
-        self.live_outputs_rx = Some(receiver);
-        self.last_live_output_poll = Some(Instant::now());
-
-        thread::spawn(move || {
-            let _ = sender.send(fetch_live_outputs());
-        });
     }
 
     fn selected_profile(&self) -> Option<&Profile> {
@@ -882,8 +817,8 @@ impl eframe::App for GuiApp {
             return;
         }
 
-        self.refresh_daemon_status_if_needed();
-        self.refresh_live_outputs_if_needed();
+        self.refresh_daemon_status();
+        self.refresh_live_outputs();
 
         egui::TopBottomPanel::top("status_bar")
             .exact_height(metrics.toolbar_height)
@@ -911,7 +846,7 @@ impl eframe::App for GuiApp {
                 self.show_monitor_area(ui);
             });
 
-        if self.daemon_status_rx.is_some() || self.live_outputs_rx.is_some() {
+        if self.daemon_poller.is_fetching() || self.live_outputs_poller.is_fetching() {
             ctx.request_repaint_after(Duration::from_millis(100));
         } else {
             ctx.request_repaint_after(DAEMON_POLL_INTERVAL);

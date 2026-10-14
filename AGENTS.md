@@ -24,6 +24,7 @@ src/
     canvas.rs             # Monitor placement canvas
     daemon_client.rs      # Control socket client used by the GUI
     output_editor.rs      # Selected-output settings strip
+    poller.rs             # Background fetch for daemon status and niri outputs
     profile_list.rs       # Profile creation and deletion defaults
   niri/
     mod.rs
