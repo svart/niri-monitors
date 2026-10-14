@@ -219,4 +219,4 @@ If applying a profile would disable every connected output, the daemon refuses t
 
 If a profile is selected but monitors do not change, check the daemon log or the `last_apply.error` field of a `status` request for the plan or apply error.
 
-If `Apply Preview` is disabled in the GUI, start the daemon if needed and save pending GUI changes first. The daemon only reads the saved config.
+If `Preview plan` is disabled in the GUI, start the daemon if needed and save pending GUI changes first. The daemon only reads the saved config.

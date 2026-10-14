@@ -23,9 +23,13 @@ src/
     app.rs                # Main eframe app state and update loop
     canvas.rs             # Monitor placement canvas
     daemon_client.rs      # Control socket client used by the GUI
-    output_editor.rs      # Selected-output settings strip
+    header.rs             # Header bar and daemon status pill
+    inspector.rs          # Selected-output settings and live-layout controls
     poller.rs             # Background fetch for daemon status and niri outputs
     profile_list.rs       # Profile creation and deletion defaults
+    sidebar.rs            # Profile and output lists
+    theme.rs              # Light/dark palettes, widget styling, shared widgets
+    toast.rs              # Transient result messages
   niri/
     mod.rs
     ipc.rs                # Niri IPC client trait and socket client
@@ -58,7 +62,7 @@ The GUI currently uses the default config path only. The daemon supports `--conf
 
 Daemon and GUI startup tolerate a missing or empty config by using an empty in-memory `version = 1` config. Do not reintroduce startup failure for a missing config unless the behavior is intentionally changed with tests and docs.
 
-Manual layout behavior remains runtime-only in the daemon/control protocol. The Monitoradlo-style GUI canvas edits the selected saved profile layout draft when a profile exists; with no profiles configured, it edits and applies a live manual-layout draft without changing saved TOML.
+Manual layout behavior remains runtime-only in the daemon/control protocol. The GUI canvas edits the selected saved profile layout draft when a profile exists; with no profiles configured, it edits and applies a live manual-layout draft without changing saved TOML.
 
 Profile selection is deterministic: manual profile if enabled and matching, otherwise enabled matching profile by priority, specificity, then config order.
 
@@ -117,6 +121,6 @@ Use these files as source-of-truth anchors before changing docs or behavior:
 | Niri JSON IPC and output normalization | `src/niri/ipc.rs`, `src/niri/output.rs` |
 | Apply plan safety, diff against current state, action ordering, manual layout plans, dry-run formatting | `src/niri/apply.rs` |
 | Layout rectangles, snapping, overlap, normalization | `src/placement.rs`, `src/gui/canvas.rs` |
-| GUI user-visible workflow | `src/gui/app.rs`, `src/gui/profile_list.rs`, `src/gui/output_editor.rs` |
+| GUI user-visible workflow | `src/gui/app.rs`, `src/gui/header.rs`, `src/gui/sidebar.rs`, `src/gui/inspector.rs`, `src/gui/profile_list.rs` |
 
 When adding fields to control responses or config structs, update both human docs and the relevant agent-facing notes in this file.

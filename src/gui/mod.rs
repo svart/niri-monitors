@@ -1,13 +1,28 @@
 pub mod app;
 pub mod canvas;
 pub mod daemon_client;
-pub mod output_editor;
+pub mod header;
+pub mod inspector;
 pub mod poller;
 pub mod profile_list;
+pub mod sidebar;
+pub mod theme;
+pub mod toast;
 
-use eframe::egui::Color32;
+/// Scale as people write it: `1×`, `1.25×`, `1.5×`.
+fn format_scale(scale: f64) -> String {
+    let text = format!("{scale:.3}");
+    format!("{}×", text.trim_end_matches('0').trim_end_matches('.'))
+}
 
-// Status colors shared by the GUI panels.
-const OK_COLOR: Color32 = Color32::from_rgb(72, 143, 92);
-const WARNING_COLOR: Color32 = Color32::from_rgb(184, 111, 36);
-const ERROR_COLOR: Color32 = Color32::from_rgb(184, 67, 67);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_scale_drops_trailing_zeros() {
+        assert_eq!(format_scale(1.0), "1×");
+        assert_eq!(format_scale(1.25), "1.25×");
+        assert_eq!(format_scale(1.5), "1.5×");
+    }
+}

@@ -50,7 +50,7 @@ Open the GUI editor:
 cargo run --bin niri-monitors-gui
 ```
 
-Arrange outputs directly in the GUI without a profile, or create a profile, arrange outputs on the canvas, save it, then use `Apply Preview` while the daemon is running. The GUI writes `config.toml.bak` before replacing an existing config.
+Arrange outputs directly in the GUI without a profile, or create a profile, arrange outputs on the canvas, save it, then use `Preview plan` while the daemon is running. The GUI writes `config.toml.bak` before replacing an existing config.
 
 ## Commands
 

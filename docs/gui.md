@@ -1,6 +1,6 @@
 # niri-monitors GUI
 
-`niri-monitors-gui` is a native eframe/egui editor for the same TOML config used by `niri-monitorsd`. The window title and main editor layout follow the Monitoradlo-style profile toolbar, monitor canvas, and selected-output control strip.
+`niri-monitors-gui` is a native eframe/egui editor for the same TOML config used by `niri-monitorsd`. It has a header with the daemon status, a profile sidebar, a monitor canvas, and an inspector for the selected output.
 
 Run the native editor with:
 
@@ -28,43 +28,88 @@ The GUI currently has no CLI flag for an alternate config path.
 
 1. Start niri so `NIRI_SOCKET` is available.
 2. Run `cargo run --bin niri-monitors-gui`.
-3. With no profiles configured, drag monitor rectangles in the canvas and use `Apply Changes` to apply the live layout.
-4. Use `+ New` if you want to save the current outputs as a reusable profile.
-5. Select a profile from the `Profile` dropdown.
-6. Drag monitor rectangles in the canvas or edit the selected output in the bottom strip.
-7. Use `Rename` to edit the selected profile name.
-8. Use `Save` or `Ctrl`/`Cmd`+`S` to write the TOML config.
-9. Start `niri-monitorsd` if you want `Apply Preview` to ask the daemon for the saved profile's plan.
+3. With no profiles configured, drag monitors on the canvas and use `Apply` to apply the live layout.
+4. Use `+ Save as profile` (or `+ New profile` once profiles exist) to save the current outputs as a reusable profile. The new profile starts in rename mode.
+5. Select a profile in the sidebar.
+6. Drag monitors on the canvas, or edit the selected output in the inspector.
+7. Use `Save` in the header or `Ctrl`/`Cmd`+`S` to write the TOML config.
+8. Start `niri-monitorsd` if you want `Preview plan` to ask the daemon for the saved profile's plan.
 
 ## Layout
 
-- Top: `Profile` dropdown plus `+ New`, `Rename`, `Delete`, and `Save` actions.
-- Middle: monitor arrangement canvas. With a selected profile, dragging updates that output's saved profile position draft. Without a profile, dragging updates a live manual layout draft.
-- Bottom: selected-output controls for profile mode, or live-layout `Apply Changes` and `Reset Draft` controls when no profile is selected.
+- Header: the app name, a daemon status pill, a `niri unreachable` pill when niri cannot be reached, and `Save`. Hover a pill for details.
+- Sidebar (left): the profile list, or the connected outputs (including outputs that are off) when no profiles exist.
+- Canvas (center): the monitor arrangement. A dot grid fills the background and a small crosshair marks logical `0, 0`.
+- Inspector (right): settings for the selected output, the layout check, and the plan preview. Below 1000 px of window width, the inspector moves under the canvas.
 
-The interface adapts to window size: large windows use taller strips, larger text, and larger buttons; narrow windows use compact spacing and smaller controls.
+The GUI follows the system light or dark setting.
+
+### Daemon status pill
+
+| Pill | Meaning |
+| --- | --- |
+| `Automatic · <profile>` | The daemon applies the best matching profile when monitors change. |
+| `Paused` | The daemon selects profiles but does not apply them. |
+| `Manual profile · <profile>` | A profile was activated through the control socket and is kept. |
+| `Manual layout` | A layout applied from this window is active; profiles are not applied. |
+| `Daemon offline` | The control socket cannot be reached. Hover for the reason. |
+
+The pill turns red when the daemon's last apply failed; hover it for the error.
+
+### Sidebar
+
+Each profile row shows a dot (green when the profile matches the connected monitors), its priority, whether it matches, and an `Active` badge on the profile the daemon has selected. Double-click a row to rename it; right-click for `Rename` and `Delete…`.
+
+### Canvas
+
+Each monitor tile shows the connector, the make and model, and its logical size, scale, and refresh rate after the profile is applied. Tiles use the profile's mode, scale, and rotation, so they show the layout the profile produces, not the current one.
+
+- The selected tile has an accent outline and a shadow.
+- Overlapping tiles have a red fill. The inspector names the overlapping outputs.
+- Outputs that the profile turns off, and profile outputs that are not connected, have a dashed outline.
+- Dragging snaps edges and centers to other monitors; dashed accent lines show the snap.
 
 ## Editing
 
-- Profile edits are made in memory first.
-- `Save` or `Ctrl`/`Cmd`+`S` writes the TOML config.
-- `Ctrl+Q` exits the GUI.
+- Profile edits are made in memory first. `Unsaved changes` appears next to `Save` until you save.
 - Saving an existing config first writes `config.toml.bak` next to the config file.
 - After a successful save, the GUI asks a running daemon to reload the saved config.
-- `+ New` creates a profile from live outputs when available: all connected outputs become `all_connected` matchers, output settings copy current niri state, and priority is one higher than the current maximum.
-- `Rename` replaces the profile dropdown with an inline name field. Press `Enter`, press `Esc`, or move focus away to finish renaming.
-- `Delete` asks for confirmation before removing a profile from the draft.
-- Dragging monitors edits the selected profile's saved output positions in the in-memory TOML draft when a profile is selected.
-- With no profiles configured, dragging monitors edits a runtime-only live layout draft. `Apply Changes` applies changed positions through the daemon when it is running, otherwise directly through niri IPC.
-- `Reset Draft` discards unapplied live-layout drag changes.
-- Overlapping monitor rectangles are highlighted. Save is blocked until config validation passes.
+- `+ New profile` creates a profile from live outputs when available: all connected outputs become `all_connected` matchers, output settings copy current niri state, and priority is one higher than the current maximum.
+- Deleting a profile asks for confirmation in a dialog.
+- Results such as `Saved` or `Applying failed` appear as toasts in the bottom-right corner. Click a toast to dismiss it.
+- Config load and validation errors appear in a red banner under the header. Save stays disabled until the config is valid.
 - The GUI does not edit profile conditions, priority, or the profile `enabled` flag. Edit those in the TOML file; see `docs/config.md`.
+
+### Inspector
+
+The inspector edits the selected output of the selected profile:
+
+- `Turn on`, `Mode`, and `Variable refresh rate` in the `Display` card. A mode the connected output does not offer shows a warning. For an output that is not connected, the mode is a text field (`WIDTHxHEIGHT@HZ`).
+- `Scale` with presets (1×, 1.25×, 1.5×, 1.75×, 2×) and a custom value.
+- `Rotation` (0°, 90°, 180°, 270°) and `Mirrored`.
+- `Position` of the top-left corner.
+
+A setting that the profile leaves unset keeps the output's current value when the profile is applied, and the inspector shows that value as `keeps …`. `Reset` unsets a setting.
+
+### Keyboard
+
+| Keys | Action |
+| --- | --- |
+| `Ctrl`/`Cmd`+`S` | Save. |
+| `Ctrl`+`Q` | Quit. |
+| Arrow keys | Move the selected monitor by 1 px. |
+| `Shift`+arrow keys | Move the selected monitor by 10 px. |
+| `Delete` | Ask to delete the selected profile. |
+
+Keys other than `Ctrl` shortcuts are ignored while a text field has focus.
 
 ## Profile Actions
 
-`Apply Preview` requires a running daemon and no unsaved GUI changes because the daemon previews the saved config. It asks the daemon for the selected profile's planned actions and warnings without applying them.
+`Preview plan` requires a running daemon and no unsaved GUI changes because the daemon previews the saved config. It shows the actions the daemon would send and any warnings, without applying them.
 
-The displayed dry-run panel shows the selected profile id, action count, warnings, and formatted dry-run text.
+## Live Layout
+
+With no profiles configured, the canvas edits a runtime-only draft of the live layout. `Apply` sends changed positions through the daemon when it is running, which pauses automatic profile loading, or directly through niri IPC otherwise. `Reset` discards the dragged positions. Outputs that are off appear in the sidebar but cannot be placed.
 
 ## Daemon Integration
 
@@ -76,22 +121,26 @@ $XDG_RUNTIME_DIR/niri-monitors.sock
 
 The GUI polls daemon status once per second. It can request preview plans and asks a running daemon to reload after saving.
 
-If the daemon is unavailable, profile editing and direct live-layout apply stay available as long as the GUI can reach niri through `NIRI_SOCKET` or has existing profile data. `Apply Preview` stays disabled until the daemon is running and the current draft is saved.
+If the daemon is unavailable, profile editing and direct live-layout apply stay available as long as the GUI can reach niri through `NIRI_SOCKET` or has existing profile data. `Preview plan` stays disabled until the daemon is running and the current draft is saved.
 
 ## Agent Reference
 
 Implementation entrypoints:
 
-- GUI app state, polling, save, profile actions, and panel layout: `src/gui/app.rs`.
+- GUI app state, polling, save, actions, shortcuts, and panel layout: `src/gui/app.rs`.
+- Palettes, widget styling, and shared widgets (cards, pills, buttons): `src/gui/theme.rs`.
+- Header and daemon status pill text: `src/gui/header.rs`.
+- Profile and output lists: `src/gui/sidebar.rs`.
+- Output settings and live-layout controls: `src/gui/inspector.rs`.
+- Canvas tiles, dragging, snapping, overlap highlighting, and nudging: `src/gui/canvas.rs`.
+- Toasts: `src/gui/toast.rs`.
 - Control socket client and timeouts: `src/gui/daemon_client.rs`.
-- Profile canvas, dragging, snapping, overlap checks, and normalization: `src/gui/canvas.rs`.
 - Profile creation and deletion defaults: `src/gui/profile_list.rs`.
-- Output setting editor and per-output warnings: `src/gui/output_editor.rs`.
 
 Keep this page aligned with user-visible labels and button behavior when editing GUI code.
 
 ## Troubleshooting
 
-- `Config load failed`: fix the TOML syntax or validation error and restart the GUI.
-- `Apply Preview` disabled: start `niri-monitorsd`, save GUI changes, then retry.
-- Missing connected outputs: confirm the GUI process can reach niri through `NIRI_SOCKET`; if direct niri IPC is unavailable, start the daemon so the GUI can use daemon-reported outputs.
+- `The config could not be loaded`: fix the TOML syntax or validation error and restart the GUI.
+- `Preview plan` disabled: hover it for the reason. Start `niri-monitorsd`, save GUI changes, then retry.
+- `niri unreachable` or `Cannot reach niri` on the canvas: the GUI cannot reach niri through `NIRI_SOCKET`. Start it from inside the niri session, or start the daemon so the GUI can use daemon-reported outputs.

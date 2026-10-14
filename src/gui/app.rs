@@ -3,73 +3,32 @@ use crate::config::{
 };
 use crate::control::PreviewData;
 use crate::gui::canvas::{
-    CanvasState, ManualLayoutDraft, show_editable_live_monitor_canvas, show_monitor_canvas,
+    CanvasState, ManualLayoutDraft, nudge_profile_output, show_editable_live_monitor_canvas,
+    show_monitor_canvas,
 };
 use crate::gui::daemon_client::{DaemonClient, DaemonConnectionState, fetch_daemon_status};
-use crate::gui::output_editor::show_output_strip;
+use crate::gui::header::{daemon_summary, show_header};
+use crate::gui::inspector::{
+    LiveLayoutAction, LiveLayoutStatus, show_live_layout, show_output_settings,
+};
 use crate::gui::poller::Poller;
 use crate::gui::profile_list::{build_new_profile, remove_profile};
-use crate::gui::{ERROR_COLOR, OK_COLOR, WARNING_COLOR};
+use crate::gui::sidebar::{self, SidebarAction};
+use crate::gui::theme;
+use crate::gui::toast::Toasts;
+use crate::matching::matcher_matches_output;
 use crate::model::{Config, ManualOutputPlacement, Profile};
 use crate::niri::ipc::{NiriClient, OutputAction, SocketNiriClient};
 use crate::niri::output::NiriOutput;
-use eframe::egui;
-use eframe::egui::{Color32, RichText, Stroke, Vec2};
+use crate::placement::{derive_output_rects, first_overlap_message};
+use eframe::egui::{self, Margin, RichText};
 use std::path::PathBuf;
 use std::time::Duration;
 
 const DAEMON_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const LIVE_OUTPUT_POLL_INTERVAL: Duration = Duration::from_secs(1);
-
-const APP_BG: Color32 = Color32::from_rgb(47, 47, 47);
-const STRIP_BG: Color32 = Color32::from_rgb(47, 47, 47);
-const BUTTON_BG: Color32 = Color32::from_rgb(43, 43, 43);
-const BUTTON_STROKE: Color32 = Color32::from_rgb(65, 65, 65);
-
-#[derive(Debug, Clone, Copy)]
-struct GuiMetrics {
-    scale: f32,
-    compact: bool,
-    toolbar_height: f32,
-    bottom_height: f32,
-    button_min_size: Vec2,
-    profile_combo_width: f32,
-}
-
-impl GuiMetrics {
-    fn from_context(ctx: &egui::Context) -> Self {
-        let size = ctx.screen_rect().size();
-        let short_side = size.x.min(size.y).max(480.0);
-        let scale = (short_side / 900.0).clamp(0.82, 1.34);
-        let compact = size.x < 780.0;
-        let toolbar_height = if compact { 104.0 } else { 76.0 } * scale;
-        let bottom_height = if compact { 176.0 } else { 126.0 } * scale;
-
-        Self {
-            scale,
-            compact,
-            toolbar_height,
-            bottom_height,
-            button_min_size: Vec2::new(68.0 * scale, 34.0 * scale),
-            profile_combo_width: if compact { 220.0 } else { 260.0 } * scale,
-        }
-    }
-
-    fn margin(self, x: f32, y: f32) -> egui::Margin {
-        egui::Margin::symmetric(
-            (x * self.scale).round() as i8,
-            (y * self.scale).round() as i8,
-        )
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum ToolbarAction {
-    New,
-    Rename,
-    Delete,
-    Save,
-}
+/// Below this window width, the inspector moves under the canvas.
+const COMPACT_WIDTH: f32 = 1000.0;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum LiveOutputsState {
@@ -88,10 +47,6 @@ pub struct GuiApp {
     original_config: Option<Config>,
     validation_error: Option<String>,
     load_error: Option<String>,
-    save_error: Option<String>,
-    last_save_message: Option<String>,
-    action_error: Option<String>,
-    action_message: Option<String>,
     preview_data: Option<PreviewData>,
     selected_profile_id: Option<String>,
     pending_delete_profile_id: Option<String>,
@@ -103,11 +58,12 @@ pub struct GuiApp {
     live_outputs: LiveOutputsState,
     daemon_poller: Poller<DaemonConnectionState>,
     live_outputs_poller: Poller<LiveOutputsState>,
+    toasts: Toasts,
 }
 
 impl GuiApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        configure_style(&cc.egui_ctx, 1.0);
+        theme::install(&cc.egui_ctx);
         Self::from_default_config_path()
     }
 
@@ -157,6 +113,13 @@ impl GuiApp {
         configs_are_dirty(self.config.as_ref(), self.original_config.as_ref())
     }
 
+    fn can_save(&self) -> bool {
+        self.config.is_some()
+            && self.config_path.is_some()
+            && self.validation_error.is_none()
+            && self.is_dirty()
+    }
+
     fn validate_draft(&mut self) {
         self.validation_error = self
             .config
@@ -166,10 +129,6 @@ impl GuiApp {
     }
 
     fn mark_draft_changed(&mut self) {
-        self.save_error = None;
-        self.last_save_message = None;
-        self.action_error = None;
-        self.action_message = None;
         self.preview_data = None;
         self.validate_draft();
     }
@@ -177,57 +136,48 @@ impl GuiApp {
     fn save_draft(&mut self) {
         self.validate_draft();
         if let Some(error) = &self.validation_error {
-            self.save_error = Some(format!("Fix validation errors before saving: {error}"));
-            self.last_save_message = None;
+            self.toasts.error(format!("Cannot save: {error}"));
             return;
         }
-
         if !self.is_dirty() {
-            if self.save_error.is_none() {
-                self.last_save_message = Some("No changes to save.".to_owned());
-            }
             return;
         }
-
-        let Some(config_path) = self.config_path.clone() else {
-            self.save_error = Some("Cannot save because the config path is unresolved.".to_owned());
-            self.last_save_message = None;
-            return;
-        };
-        let Some(config) = self.config.clone() else {
-            self.save_error = Some("Cannot save because no config is loaded.".to_owned());
-            self.last_save_message = None;
+        let (Some(config_path), Some(config)) = (self.config_path.clone(), self.config.clone())
+        else {
+            self.toasts
+                .error("Cannot save: the config file location is unknown.");
             return;
         };
 
         match save_config_with_backup(&config_path, &config) {
             Ok(()) => {
                 self.original_config = Some(config);
-                self.save_error = None;
-                self.last_save_message = Some("Saved config.".to_owned());
                 self.reload_daemon_after_save();
             }
-            Err(error) => {
-                self.save_error = Some(error.to_string());
-                self.last_save_message = None;
-            }
+            Err(error) => self.toasts.error(format!("Saving failed: {error}")),
         }
     }
 
     fn reload_daemon_after_save(&mut self) {
-        if !matches!(self.daemon, DaemonConnectionState::Running(_)) {
+        if !self.daemon_running() {
+            self.toasts.success("Saved.");
             return;
         }
 
         match DaemonClient::from_default_socket().and_then(|client| client.reload_config()) {
             Ok(status) => {
                 self.daemon = DaemonConnectionState::Running(status);
-                self.last_save_message = Some("Saved config and reloaded daemon.".to_owned());
+                self.toasts
+                    .success("Saved. The daemon reloaded the config.");
             }
-            Err(error) => {
-                self.save_error = Some(format!("Saved config, but daemon reload failed: {error}"));
-            }
+            Err(error) => self
+                .toasts
+                .error(format!("Saved, but the daemon did not reload: {error}")),
         }
+    }
+
+    fn daemon_running(&self) -> bool {
+        matches!(self.daemon, DaemonConnectionState::Running(_))
     }
 
     fn connected_outputs(&self) -> &[NiriOutput] {
@@ -240,30 +190,30 @@ impl GuiApp {
         }
     }
 
-    fn selected_profile_id_for_action(&self) -> Option<String> {
-        self.selected_profile().map(|profile| profile.id.clone())
+    fn niri_error(&self) -> Option<&str> {
+        match &self.live_outputs {
+            LiveOutputsState::Offline { message } => Some(message),
+            LiveOutputsState::Checking | LiveOutputsState::Available(_) => None,
+        }
     }
 
     fn preview_selected_profile(&mut self) {
-        let Some(profile_id) = self.selected_profile_id_for_action() else {
+        let Some(profile_id) = self.selected_profile().map(|profile| profile.id.clone()) else {
             return;
         };
         match DaemonClient::from_default_socket()
             .and_then(|client| client.preview_profile(profile_id))
         {
-            Ok(preview) => {
-                self.preview_data = Some(preview);
-                self.action_error = None;
-                self.action_message = Some("Preview plan refreshed.".to_owned());
-            }
-            Err(error) => self.set_action_error(error.to_string()),
+            Ok(preview) => self.preview_data = Some(preview),
+            Err(error) => self.toasts.error(format!("Preview failed: {error}")),
         }
     }
 
     fn apply_manual_layout(&mut self) {
         let connected_outputs = self.connected_outputs().to_vec();
         if let Some(message) = self.manual_layout.first_overlap_message(&connected_outputs) {
-            self.set_action_error(format!("Cannot apply: {message}. Move monitors apart."));
+            self.toasts
+                .error(format!("Cannot apply: {message}. Move the monitors apart."));
             return;
         }
 
@@ -273,15 +223,13 @@ impl GuiApp {
             .into_iter()
             .map(|(output, position)| ManualOutputPlacement { output, position })
             .collect::<Vec<_>>();
-
         if placements.is_empty() {
-            self.action_error = None;
-            self.action_message =
-                Some("Layout already matches current monitor positions.".to_owned());
+            self.toasts
+                .success("The layout already matches the monitors.");
             return;
         }
 
-        if matches!(self.daemon, DaemonConnectionState::Running(_)) {
+        if self.daemon_running() {
             self.apply_manual_layout_via_daemon(placements);
         } else {
             self.apply_manual_layout_direct(placements);
@@ -296,11 +244,10 @@ impl GuiApp {
                 self.live_outputs = LiveOutputsState::Available(status.outputs.clone());
                 self.manual_layout.sync_from_outputs(&status.outputs);
                 self.daemon = DaemonConnectionState::Running(status);
-                self.action_error = None;
-                self.action_message =
-                    Some("Manual layout applied. Automatic profile loading paused.".to_owned());
+                self.toasts
+                    .success("Layout applied. Automatic profiles are paused.");
             }
-            Err(error) => self.set_action_error(error.to_string()),
+            Err(error) => self.toasts.error(format!("Applying failed: {error}")),
         }
     }
 
@@ -322,17 +269,10 @@ impl GuiApp {
             Ok(outputs) => {
                 self.manual_layout.sync_from_outputs(&outputs);
                 self.live_outputs = LiveOutputsState::Available(outputs);
-                self.action_error = None;
-                self.action_message =
-                    Some("Manual layout applied directly through niri.".to_owned());
+                self.toasts.success("Layout applied through niri.");
             }
-            Err(error) => self.set_action_error(error),
+            Err(error) => self.toasts.error(format!("Applying failed: {error}")),
         }
-    }
-
-    fn set_action_error(&mut self, error: String) {
-        self.action_error = Some(error);
-        self.action_message = None;
     }
 
     fn selected_profile_index(&self) -> Option<usize> {
@@ -350,6 +290,27 @@ impl GuiApp {
         (!config.profiles.is_empty()).then_some(0)
     }
 
+    fn selected_profile(&self) -> Option<&Profile> {
+        let config = self.config.as_ref()?;
+        config.profiles.get(self.selected_profile_index()?)
+    }
+
+    fn select_profile(&mut self, index: usize) {
+        let Some(profile) = self
+            .config
+            .as_ref()
+            .and_then(|config| config.profiles.get(index))
+        else {
+            return;
+        };
+        if self.selected_profile_id.as_deref() != Some(profile.id.as_str()) {
+            self.selected_profile_id = Some(profile.id.clone());
+            self.canvas.selected_output = None;
+            self.preview_data = None;
+        }
+        self.renaming_profile = false;
+    }
+
     fn create_profile(&mut self) {
         let connected_outputs = self.connected_outputs().to_vec();
         let Some(config) = self.config.as_mut() else {
@@ -359,23 +320,20 @@ impl GuiApp {
         let profile = build_new_profile(&config.profiles, &connected_outputs);
         self.selected_profile_id = Some(profile.id.clone());
         config.profiles.push(profile);
-        self.pending_delete_profile_id = None;
-        self.renaming_profile = false;
+        self.canvas.selected_output = None;
+        self.renaming_profile = true;
         self.mark_draft_changed();
     }
 
-    fn request_delete_selected_profile(&mut self) {
-        self.pending_delete_profile_id = self.selected_profile().map(|profile| profile.id.clone());
-    }
-
     fn confirm_delete_profile(&mut self, profile_id: &str) {
+        self.pending_delete_profile_id = None;
         let Some(config) = self.config.as_mut() else {
             return;
         };
 
         if remove_profile(&mut config.profiles, profile_id) {
             self.selected_profile_id = config.profiles.first().map(|profile| profile.id.clone());
-            self.pending_delete_profile_id = None;
+            self.canvas.selected_output = None;
             self.renaming_profile = false;
             self.mark_draft_changed();
         }
@@ -416,147 +374,304 @@ impl GuiApp {
         }
     }
 
-    fn selected_profile(&self) -> Option<&Profile> {
-        let config = self.config.as_ref()?;
-        config.profiles.get(self.selected_profile_index()?)
-    }
-
-    fn show_status_bar(&mut self, ui: &mut egui::Ui, metrics: GuiMetrics) {
-        ui.set_height(metrics.toolbar_height);
-        if metrics.compact {
-            ui.vertical_centered(|ui| {
-                ui.add_space(4.0 * metrics.scale);
-                ui.horizontal(|ui| self.show_profile_selector(ui, metrics));
-                ui.add_space(4.0 * metrics.scale);
-                ui.horizontal(|ui| self.show_toolbar_actions(ui, metrics, false));
-            });
-        } else {
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                self.show_profile_selector(ui, metrics);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    self.show_toolbar_actions(ui, metrics, true);
-                });
-            });
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        if ctx.input(|input| input.modifiers.command && input.key_pressed(egui::Key::S)) {
+            self.save_draft();
         }
-    }
-
-    fn show_profile_selector(&mut self, ui: &mut egui::Ui, metrics: GuiMetrics) {
-        ui.label(RichText::new("Profile:").size(15.0 * metrics.scale));
-
-        if self.renaming_profile {
-            let mut changed = false;
-            let finish_rename;
-
-            if let Some(profile_index) = self.selected_profile_index()
-                && let Some(config) = self.config.as_mut()
-                && let Some(profile) = config.profiles.get_mut(profile_index)
-            {
-                let response = ui.add_sized(
-                    [metrics.profile_combo_width, metrics.button_min_size.y],
-                    egui::TextEdit::singleline(&mut profile.name),
-                );
-                changed = response.changed();
-                let pressed_done = ui.input(|input| {
-                    input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Escape)
-                });
-                finish_rename = pressed_done || response.lost_focus();
-                if !finish_rename {
-                    response.request_focus();
-                }
-            } else {
-                ui.add_sized(
-                    [metrics.profile_combo_width, metrics.button_min_size.y],
-                    egui::Label::new("No profile"),
-                );
-                finish_rename = true;
-            }
-
-            if changed {
-                self.mark_draft_changed();
-            }
-            if finish_rename {
-                self.renaming_profile = false;
-            }
+        if ctx.input(|input| input.modifiers.ctrl && input.key_pressed(egui::Key::Q)) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        if ctx.wants_keyboard_input() || self.pending_delete_profile_id.is_some() {
             return;
         }
 
-        let selected_text = self
-            .selected_profile()
-            .map(|profile| profile.name.clone())
-            .unwrap_or_else(|| "No profile".to_owned());
-        let selected_index = self.selected_profile_index();
-        let mut next_selection = None;
-
-        egui::ComboBox::from_id_salt("profile_selector")
-            .selected_text(selected_text)
-            .width(metrics.profile_combo_width)
-            .show_ui(ui, |ui| {
-                if let Some(config) = &self.config {
-                    for (index, profile) in config.profiles.iter().enumerate() {
-                        if ui
-                            .selectable_label(selected_index == Some(index), &profile.name)
-                            .clicked()
-                        {
-                            next_selection = Some(profile.id.clone());
-                        }
-                    }
+        let (delta, delete) = ctx.input(|input| {
+            let step = if input.modifiers.shift { 10 } else { 1 };
+            let mut delta = (0, 0);
+            for (key, dx, dy) in [
+                (egui::Key::ArrowLeft, -step, 0),
+                (egui::Key::ArrowRight, step, 0),
+                (egui::Key::ArrowUp, 0, -step),
+                (egui::Key::ArrowDown, 0, step),
+            ] {
+                if input.key_pressed(key) {
+                    delta = (delta.0 + dx, delta.1 + dy);
                 }
-            });
-
-        if let Some(profile_id) = next_selection {
-            self.selected_profile_id = Some(profile_id);
-            self.canvas.selected_output = None;
-            self.preview_data = None;
-            self.action_error = None;
-            self.action_message = None;
+            }
+            (delta, input.key_pressed(egui::Key::Delete))
+        });
+        if delta != (0, 0) {
+            self.nudge_selected_output(delta);
+        }
+        if delete {
+            self.pending_delete_profile_id =
+                self.selected_profile().map(|profile| profile.id.clone());
         }
     }
 
-    fn show_toolbar_actions(
-        &mut self,
-        ui: &mut egui::Ui,
-        metrics: GuiMetrics,
-        right_to_left: bool,
-    ) {
-        let has_profile = self.selected_profile().is_some();
-        let can_save =
-            self.config.is_some() && self.config_path.is_some() && self.validation_error.is_none();
-
-        let mut buttons = [
-            (ToolbarAction::New, "+ New", true),
-            (ToolbarAction::Rename, "Rename", has_profile),
-            (ToolbarAction::Delete, "Delete", has_profile),
-            (ToolbarAction::Save, "Save", can_save),
-        ];
-        // A right-to-left layout places the first button on the right.
-        if right_to_left {
-            buttons.reverse();
-        }
-
-        let mut clicked = None;
-        for (action, label, enabled) in buttons {
-            if ui
-                .add_enabled(enabled, toolbar_button(label, metrics))
-                .clicked()
-            {
-                clicked = Some(action);
+    fn nudge_selected_output(&mut self, delta: (i32, i32)) {
+        let connected_outputs = self.connected_outputs().to_vec();
+        let Some(profile_index) = self.selected_profile_index() else {
+            if let Some(output_index) = self.runtime_canvas.selected_output {
+                self.manual_layout
+                    .nudge(&connected_outputs, output_index, delta);
             }
-        }
+            return;
+        };
 
-        match clicked {
-            Some(ToolbarAction::New) => self.create_profile(),
-            Some(ToolbarAction::Rename) => self.renaming_profile = true,
-            Some(ToolbarAction::Delete) => self.request_delete_selected_profile(),
-            Some(ToolbarAction::Save) => self.save_draft(),
+        if let Some(output_index) = self.canvas.selected_output
+            && let Some(profile) = self
+                .config
+                .as_mut()
+                .and_then(|config| config.profiles.get_mut(profile_index))
+            && nudge_profile_output(profile, &connected_outputs, output_index, delta)
+        {
+            self.mark_draft_changed();
+        }
+    }
+
+    fn show_header(&mut self, ui: &mut egui::Ui) {
+        let profiles = self
+            .config
+            .as_ref()
+            .map_or(&[][..], |config| config.profiles.as_slice());
+        let summary = daemon_summary(&self.daemon, profiles);
+        if show_header(
+            ui,
+            &summary,
+            self.niri_error(),
+            self.is_dirty(),
+            self.can_save(),
+        ) {
+            self.save_draft();
+        }
+    }
+
+    fn show_problems(&self, ui: &mut egui::Ui) {
+        let palette = theme::palette(ui.ctx());
+        if let Some(error) = &self.load_error {
+            ui.colored_label(
+                palette.error,
+                format!("The config could not be loaded: {error}"),
+            );
+        }
+        if let Some(error) = &self.validation_error {
+            ui.colored_label(
+                palette.error,
+                format!("The config has a problem, so it cannot be saved: {error}"),
+            );
+        }
+    }
+
+    fn show_sidebar(&mut self, ui: &mut egui::Ui) {
+        let connected_outputs = self.connected_outputs().to_vec();
+        let Some(profile_index) = self.selected_profile_index() else {
+            match sidebar::show_outputs(ui, &connected_outputs, self.runtime_canvas.selected_output)
+            {
+                Some(SidebarAction::Select(index)) => {
+                    self.runtime_canvas.selected_output = Some(index);
+                }
+                Some(SidebarAction::New) => self.create_profile(),
+                _ => {}
+            }
+            return;
+        };
+
+        let active_profile = match &self.daemon {
+            DaemonConnectionState::Running(status) => status.selected_profile.clone(),
+            DaemonConnectionState::Checking | DaemonConnectionState::Offline { .. } => None,
+        };
+        let Some(config) = self.config.as_mut() else {
+            return;
+        };
+        let (action, renamed) = sidebar::show_profiles(
+            ui,
+            &mut config.profiles,
+            Some(profile_index),
+            self.renaming_profile,
+            active_profile.as_deref(),
+            &connected_outputs,
+        );
+        let profile_id =
+            |index: usize| config.profiles.get(index).map(|profile| profile.id.clone());
+        let delete_id = match action {
+            Some(SidebarAction::Delete(index)) => profile_id(index),
+            _ => None,
+        };
+
+        if renamed {
+            self.mark_draft_changed();
+        }
+        match action {
+            Some(SidebarAction::Select(index)) => self.select_profile(index),
+            Some(SidebarAction::StartRename(index)) => {
+                self.select_profile(index);
+                self.renaming_profile = true;
+            }
+            Some(SidebarAction::FinishRename) => self.renaming_profile = false,
+            Some(SidebarAction::Delete(_)) => self.pending_delete_profile_id = delete_id,
+            Some(SidebarAction::New) => self.create_profile(),
             None => {}
         }
     }
 
-    fn show_delete_confirmation(&mut self, ui: &mut egui::Ui) {
-        let Some(profile_id) = self.pending_delete_profile_id.clone() else {
+    fn show_inspector(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| match self.selected_profile_index() {
+                Some(profile_index) => self.show_profile_inspector(ui, profile_index),
+                None => self.show_live_inspector(ui),
+            });
+    }
+
+    fn show_profile_inspector(&mut self, ui: &mut egui::Ui, profile_index: usize) {
+        let palette = theme::palette(ui.ctx());
+        let connected_outputs = self.connected_outputs().to_vec();
+        let daemon_running = self.daemon_running();
+        let can_preview = daemon_running && !self.is_dirty();
+        let Some(profile) = self
+            .config
+            .as_mut()
+            .and_then(|config| config.profiles.get_mut(profile_index))
+        else {
             return;
         };
 
+        let mut changed = false;
+        if profile.outputs.is_empty() {
+            ui.label(RichText::new(&profile.name).heading().strong());
+            ui.label(theme::weak(ui, "This profile has no outputs."));
+        } else {
+            let output_index = self
+                .canvas
+                .selected_output
+                .filter(|index| *index < profile.outputs.len())
+                .unwrap_or(0);
+            self.canvas.selected_output = Some(output_index);
+            let output = &mut profile.outputs[output_index];
+            let connected = connected_outputs
+                .iter()
+                .find(|connected| matcher_matches_output(&output.matcher, connected));
+            changed = show_output_settings(ui, output, connected);
+        }
+
+        if let Some(overlap) =
+            first_overlap_message(&derive_output_rects(profile, &connected_outputs))
+        {
+            theme::section(ui, "Layout", |ui| {
+                ui.colored_label(
+                    palette.error,
+                    format!("{overlap}. Move them apart: the daemon refuses overlapping layouts."),
+                );
+            });
+        }
+
+        let mut preview_clicked = false;
+        theme::section(ui, "Plan", |ui| {
+            ui.label(theme::weak(
+                ui,
+                "See what the daemon would change to apply this profile now.",
+            ));
+            preview_clicked = ui
+                .add_enabled(can_preview, egui::Button::new("Preview plan"))
+                .on_disabled_hover_text(if daemon_running {
+                    "Save first: the daemon previews the saved config"
+                } else {
+                    "Start niri-monitorsd to preview plans"
+                })
+                .clicked();
+
+            if let Some(preview) = self
+                .preview_data
+                .as_ref()
+                .filter(|preview| preview.profile_id == profile.id)
+            {
+                ui.add_space(4.0);
+                for warning in &preview.warnings {
+                    ui.colored_label(palette.warning, warning);
+                }
+                egui::ScrollArea::vertical()
+                    .id_salt("preview")
+                    .max_height(180.0)
+                    .show(ui, |ui| {
+                        ui.monospace(&preview.dry_run_output);
+                    });
+            }
+        });
+
+        if changed {
+            self.mark_draft_changed();
+        }
+        if preview_clicked {
+            self.preview_selected_profile();
+        }
+    }
+
+    fn show_live_inspector(&mut self, ui: &mut egui::Ui) {
+        let outputs = self.connected_outputs().to_vec();
+        let overlap = self.manual_layout.first_overlap_message(&outputs);
+        let status = LiveLayoutStatus {
+            has_outputs: !outputs.is_empty(),
+            has_changes: !self
+                .manual_layout
+                .normalized_changed_positions(&outputs)
+                .is_empty(),
+            overlap: overlap.as_deref(),
+            daemon_running: self.daemon_running(),
+        };
+        let selected = self
+            .runtime_canvas
+            .selected_output
+            .and_then(|index| outputs.get(index));
+
+        match show_live_layout(ui, selected, &status) {
+            Some(LiveLayoutAction::Apply) => self.apply_manual_layout(),
+            Some(LiveLayoutAction::Reset) => self.manual_layout.reset(),
+            None => {}
+        }
+    }
+
+    fn show_monitor_area(&mut self, ui: &mut egui::Ui) {
+        let connected_outputs = self.connected_outputs().to_vec();
+        let Some(profile_index) = self.selected_profile_index() else {
+            let empty_message = self.live_empty_message();
+            show_editable_live_monitor_canvas(
+                ui,
+                &connected_outputs,
+                &mut self.manual_layout,
+                &mut self.runtime_canvas,
+                &empty_message,
+            );
+            return;
+        };
+
+        if let Some(profile) = self
+            .config
+            .as_mut()
+            .and_then(|config| config.profiles.get_mut(profile_index))
+            && show_monitor_canvas(ui, profile, &connected_outputs, &mut self.canvas)
+        {
+            self.mark_draft_changed();
+        }
+    }
+
+    fn live_empty_message(&self) -> String {
+        match (&self.live_outputs, self.connected_outputs().is_empty()) {
+            (LiveOutputsState::Offline { message }, true) => format!(
+                "Cannot reach niri: {message}. Start this window from inside a niri session."
+            ),
+            (LiveOutputsState::Checking, true) => {
+                "Asking niri for the connected monitors…".to_owned()
+            }
+            (_, true) => "niri reports no connected monitors.".to_owned(),
+            (_, false) => "All connected monitors are off.".to_owned(),
+        }
+    }
+
+    fn show_delete_dialog(&mut self, ctx: &egui::Context) {
+        let Some(profile_id) = self.pending_delete_profile_id.clone() else {
+            return;
+        };
         let profile_name = self
             .config
             .as_ref()
@@ -566,276 +681,95 @@ impl GuiApp {
                     .iter()
                     .find(|profile| profile.id == profile_id)
             })
-            .map(|profile| profile.name.clone())
-            .unwrap_or_else(|| profile_id.clone());
+            .map_or_else(|| profile_id.clone(), |profile| profile.name.clone());
 
-        ui.add_space(8.0);
-        ui.colored_label(WARNING_COLOR, format!("Delete {profile_name}?"));
-        ui.horizontal(|ui| {
-            if ui.button("Confirm").clicked() {
-                self.confirm_delete_profile(&profile_id);
-            }
-            if ui.button("Cancel").clicked() {
-                self.pending_delete_profile_id = None;
-            }
-        });
-    }
-
-    fn show_action_feedback(&self, ui: &mut egui::Ui) {
-        if let Some(error) = &self.action_error {
-            ui.colored_label(ERROR_COLOR, error);
-        } else if let Some(message) = &self.action_message {
-            ui.colored_label(OK_COLOR, message);
-        }
-    }
-
-    fn show_preview_data(&self, ui: &mut egui::Ui) {
-        let Some(preview) = &self.preview_data else {
-            return;
-        };
-
-        ui.add_space(8.0);
-        ui.collapsing("Dry Run", |ui| {
-            ui.label(format!("Profile: {}", preview.profile_id));
-            ui.label(format!("Planned actions: {}", preview.actions.len()));
-            for warning in &preview.warnings {
-                ui.colored_label(WARNING_COLOR, warning);
-            }
-            egui::ScrollArea::vertical()
-                .max_height(180.0)
-                .show(ui, |ui| {
-                    ui.monospace(&preview.dry_run_output);
-                });
-        });
-    }
-
-    fn show_monitor_area(&mut self, ui: &mut egui::Ui) {
-        let connected_outputs = self.connected_outputs().to_vec();
-        let Some(profile_index) = self.selected_profile_index() else {
-            let changed = show_editable_live_monitor_canvas(
+        let mut confirmed = false;
+        let mut cancelled = false;
+        let palette = theme::palette(ctx);
+        let frame = egui::Frame::popup(&ctx.style())
+            .fill(palette.surface)
+            .corner_radius(egui::CornerRadius::same(10))
+            .inner_margin(Margin::same(16));
+        let modal = egui::Modal::new(egui::Id::new("delete_profile"))
+            .frame(frame)
+            .show(ctx, |ui| {
+            ui.set_width(340.0);
+            ui.label(RichText::new(format!("Delete “{profile_name}”?")).heading().strong());
+            ui.add_space(4.0);
+            ui.label(theme::weak(
                 ui,
-                &connected_outputs,
-                &mut self.manual_layout,
-                &mut self.runtime_canvas,
-            );
-
-            if changed {
-                self.action_error = None;
-                self.action_message = None;
-            }
-            return;
-        };
-
-        let Some(config) = self.config.as_mut() else {
-            ui.centered_and_justified(|ui| {
-                ui.label("No config loaded.");
+                "The profile is removed from the draft. Save to write the change to the config file.",
+            ));
+            ui.add_space(12.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                confirmed = ui.add(theme::danger_button(ui, "Delete")).clicked();
+                cancelled = ui.button("Cancel").clicked();
             });
-            return;
-        };
-
-        let Some(profile) = config.profiles.get_mut(profile_index) else {
-            ui.centered_and_justified(|ui| {
-                ui.label("No profile selected.");
-            });
-            return;
-        };
-
-        let changed = show_monitor_canvas(ui, profile, &connected_outputs, &mut self.canvas);
-
-        if changed {
-            self.mark_draft_changed();
-        }
-    }
-
-    fn show_bottom_panel(&mut self, ui: &mut egui::Ui, metrics: GuiMetrics) {
-        ui.set_height(metrics.bottom_height);
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                self.show_delete_confirmation(ui);
-                self.show_status_messages(ui);
-
-                let connected_outputs = self.connected_outputs().to_vec();
-                let mut changed = false;
-
-                if let Some(profile_index) = self.selected_profile_index() {
-                    if let Some(config) = self.config.as_mut()
-                        && let Some(profile) = config.profiles.get_mut(profile_index)
-                    {
-                        changed |= show_output_strip(
-                            ui,
-                            &mut self.canvas.selected_output,
-                            profile,
-                            &connected_outputs,
-                        );
-                    }
-                } else {
-                    self.show_live_layout_controls(ui, &connected_outputs, metrics);
-                }
-
-                if changed {
-                    self.mark_draft_changed();
-                }
-
-                ui.add_space(6.0 * metrics.scale);
-                ui.horizontal_wrapped(|ui| {
-                    if self.selected_profile().is_some() {
-                        let can_preview = matches!(self.daemon, DaemonConnectionState::Running(_))
-                            && !self.is_dirty();
-                        if ui
-                            .add_enabled(
-                                can_preview,
-                                toolbar_button("Apply Preview", metrics).min_size(Vec2::new(
-                                    112.0 * metrics.scale,
-                                    34.0 * metrics.scale,
-                                )),
-                            )
-                            .clicked()
-                        {
-                            self.preview_selected_profile();
-                        }
-                    }
-
-                    self.show_action_feedback(ui);
-                });
-
-                self.show_preview_data(ui);
-            });
-    }
-
-    fn show_live_layout_controls(
-        &mut self,
-        ui: &mut egui::Ui,
-        outputs: &[NiriOutput],
-        metrics: GuiMetrics,
-    ) {
-        let has_outputs = !outputs.is_empty();
-        let has_changes = !self
-            .manual_layout
-            .normalized_changed_positions(outputs)
-            .is_empty();
-        let overlap_message = self.manual_layout.first_overlap_message(outputs);
-        let has_overlap = overlap_message.is_some();
-
-        ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new("Live Layout")
-                    .strong()
-                    .size(18.0 * metrics.scale),
-            );
-            if let Some(output) = self
-                .runtime_canvas
-                .selected_output
-                .and_then(|index| outputs.get(index))
-            {
-                ui.label(&output.connector);
-                ui.label(RichText::new(&output.description).weak());
-                if let Some(logical) = &output.logical {
-                    ui.label(format!("x {}", logical.x));
-                    ui.label(format!("y {}", logical.y));
-                    ui.label(format!("scale {}", logical.scale));
-                }
-            } else if has_outputs {
-                ui.label("Click a monitor to select it, then drag to arrange.");
-            } else {
-                ui.label("No connected outputs available.");
-            }
         });
 
-        ui.add_space(6.0 * metrics.scale);
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .add_enabled(
-                    has_outputs && has_changes && !has_overlap,
-                    toolbar_button("Apply Changes", metrics)
-                        .min_size(Vec2::new(120.0 * metrics.scale, 34.0 * metrics.scale)),
-                )
-                .clicked()
-            {
-                self.apply_manual_layout();
-            }
-
-            if ui
-                .add_enabled(has_changes, toolbar_button("Reset Draft", metrics))
-                .clicked()
-            {
-                self.manual_layout.reset();
-                self.action_error = None;
-                self.action_message = Some("Manual layout draft reset.".to_owned());
-            }
-
-            if has_overlap {
-                ui.colored_label(ERROR_COLOR, "layout overlaps");
-            } else if has_changes {
-                ui.colored_label(WARNING_COLOR, "layout changed");
-            } else if has_outputs {
-                ui.colored_label(OK_COLOR, "layout current");
-            }
-        });
-
-        if let Some(message) = overlap_message {
-            ui.colored_label(
-                ERROR_COLOR,
-                format!("Cannot apply: {message}. Move monitors apart."),
-            );
-        }
-    }
-
-    fn show_status_messages(&self, ui: &mut egui::Ui) {
-        if let Some(error) = &self.load_error {
-            ui.colored_label(ERROR_COLOR, format!("Config load failed: {error}"));
-        }
-        if let Some(error) = &self.validation_error {
-            ui.colored_label(ERROR_COLOR, format!("Validation failed: {error}"));
-        }
-        if let Some(error) = &self.save_error {
-            ui.colored_label(ERROR_COLOR, error);
-        } else if let Some(message) = &self.last_save_message {
-            ui.colored_label(OK_COLOR, message);
-        } else if self.is_dirty() {
-            ui.colored_label(WARNING_COLOR, "Unsaved changes");
+        if confirmed {
+            self.confirm_delete_profile(&profile_id);
+        } else if cancelled || modal.should_close() {
+            self.pending_delete_profile_id = None;
         }
     }
 }
 
 impl eframe::App for GuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let metrics = GuiMetrics::from_context(ctx);
-        configure_style(ctx, metrics.scale);
-
-        if ctx.input(|input| input.modifiers.command && input.key_pressed(egui::Key::S)) {
-            self.save_draft();
-        }
-
-        if ctx.input(|input| input.modifiers.ctrl && input.key_pressed(egui::Key::Q)) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            return;
-        }
-
+        self.handle_shortcuts(ctx);
         self.refresh_daemon_status();
         self.refresh_live_outputs();
 
-        egui::TopBottomPanel::top("status_bar")
-            .exact_height(metrics.toolbar_height)
-            .frame(strip_frame(metrics))
-            .show(ctx, |ui| self.show_status_bar(ui, metrics));
+        let palette = theme::palette(ctx);
+        let compact = ctx.screen_rect().width() < COMPACT_WIDTH;
 
-        egui::TopBottomPanel::bottom("controls_and_info")
-            .exact_height(metrics.bottom_height)
-            .frame(strip_frame(metrics))
-            .show(ctx, |ui| self.show_bottom_panel(ui, metrics));
-
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(APP_BG).inner_margin(0))
-            .show(ctx, |ui| {
-                self.show_monitor_area(ui);
-            });
-
-        if self.daemon_poller.is_fetching() || self.live_outputs_poller.is_fetching() {
-            ctx.request_repaint_after(Duration::from_millis(100));
-        } else {
-            ctx.request_repaint_after(DAEMON_POLL_INTERVAL);
+        egui::TopBottomPanel::top("header")
+            .frame(theme::panel_frame(palette).inner_margin(Margin::symmetric(16, 10)))
+            .show(ctx, |ui| self.show_header(ui));
+        if self.load_error.is_some() || self.validation_error.is_some() {
+            egui::TopBottomPanel::top("problems")
+                .frame(
+                    egui::Frame::new()
+                        .fill(palette.window.lerp_to_gamma(palette.error, 0.15))
+                        .inner_margin(Margin::symmetric(16, 8)),
+                )
+                .show(ctx, |ui| self.show_problems(ui));
         }
+        egui::SidePanel::left("sidebar")
+            .resizable(false)
+            .exact_width(if compact { 200.0 } else { 240.0 })
+            .frame(theme::panel_frame(palette))
+            .show(ctx, |ui| self.show_sidebar(ui));
+        if compact {
+            egui::TopBottomPanel::bottom("inspector")
+                .resizable(true)
+                .default_height(300.0)
+                .height_range(160.0..=ctx.screen_rect().height() * 0.6)
+                .frame(theme::panel_frame(palette))
+                .show(ctx, |ui| self.show_inspector(ui));
+        } else {
+            egui::SidePanel::right("inspector")
+                .resizable(false)
+                .exact_width(320.0)
+                .frame(theme::panel_frame(palette))
+                .show(ctx, |ui| self.show_inspector(ui));
+        }
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(palette.canvas))
+            .show(ctx, |ui| self.show_monitor_area(ui));
+
+        self.show_delete_dialog(ctx);
+        self.toasts.show(ctx);
+
+        let busy = self.daemon_poller.is_fetching()
+            || self.live_outputs_poller.is_fetching()
+            || !self.toasts.is_empty();
+        ctx.request_repaint_after(if busy {
+            Duration::from_millis(100)
+        } else {
+            DAEMON_POLL_INTERVAL
+        });
     }
 }
 
@@ -846,61 +780,6 @@ fn fetch_live_outputs() -> LiveOutputsState {
             message: error.to_string(),
         },
     }
-}
-
-fn configure_style(ctx: &egui::Context, scale: f32) {
-    let mut visuals = egui::Visuals::dark();
-    visuals.window_fill = APP_BG;
-    visuals.panel_fill = APP_BG;
-    visuals.faint_bg_color = Color32::from_rgb(35, 35, 35);
-    visuals.extreme_bg_color = Color32::from_rgb(20, 20, 20);
-    visuals.widgets.noninteractive.bg_fill = APP_BG;
-    visuals.widgets.inactive.bg_fill = Color32::from_rgb(43, 43, 43);
-    visuals.widgets.hovered.bg_fill = Color32::from_rgb(58, 58, 58);
-    visuals.widgets.active.bg_fill = Color32::from_rgb(62, 62, 68);
-    visuals.selection.bg_fill = Color32::from_rgb(92, 94, 128);
-
-    let mut style = (*ctx.style()).clone();
-    style.visuals = visuals;
-    style.spacing.item_spacing = Vec2::new(10.0 * scale, 8.0 * scale);
-    style.spacing.button_padding = Vec2::new(12.0 * scale, 6.0 * scale);
-    style.spacing.interact_size = Vec2::new(28.0 * scale, 32.0 * scale);
-    style.spacing.combo_width = 180.0 * scale;
-    style.spacing.text_edit_width = 180.0 * scale;
-    style.spacing.slider_width = 120.0 * scale;
-    style.spacing.icon_width = 16.0 * scale;
-    style.spacing.icon_width_inner = 10.0 * scale;
-    style.text_styles.insert(
-        egui::TextStyle::Heading,
-        egui::FontId::proportional(22.0 * scale),
-    );
-    style.text_styles.insert(
-        egui::TextStyle::Body,
-        egui::FontId::proportional(15.0 * scale),
-    );
-    style.text_styles.insert(
-        egui::TextStyle::Button,
-        egui::FontId::proportional(15.0 * scale),
-    );
-    style.text_styles.insert(
-        egui::TextStyle::Small,
-        egui::FontId::proportional(12.0 * scale),
-    );
-    ctx.set_style(style);
-}
-
-fn toolbar_button(label: &'static str, metrics: GuiMetrics) -> egui::Button<'static> {
-    egui::Button::new(label)
-        .min_size(metrics.button_min_size)
-        .fill(BUTTON_BG)
-        .stroke(Stroke::new(1.0_f32, BUTTON_STROKE))
-}
-
-fn strip_frame(metrics: GuiMetrics) -> egui::Frame {
-    egui::Frame::new()
-        .fill(STRIP_BG)
-        .inner_margin(metrics.margin(12.0, 8.0))
-        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(51, 54, 77)))
 }
 
 fn configs_are_dirty(config: Option<&Config>, original_config: Option<&Config>) -> bool {

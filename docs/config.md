@@ -234,7 +234,7 @@ cargo run --bin niri-monitorsd -- --dry-run --once
 
 `niri-monitors-gui` saves with validation. If the target file already exists, it first copies the old file to the same directory with `.bak` appended to the filename, for example `config.toml.bak`.
 
-When the daemon is running, the GUI asks it to reload the saved config after a successful save. `Apply Preview` is disabled while the GUI has unsaved changes because the daemon only reads the file on disk.
+When the daemon is running, the GUI asks it to reload the saved config after a successful save. `Preview plan` is disabled while the GUI has unsaved changes because the daemon only reads the file on disk.
 
 ## Agent Reference
 
