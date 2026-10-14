@@ -14,27 +14,69 @@ use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, error, info};
 
+/// How the daemon reacts to output changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mode {
+    /// Select the best matching profile and apply it.
+    Auto,
+    /// Select the best matching profile without applying it.
+    Paused,
+    /// Like `Paused`, but this profile is selected while it is enabled and matches.
+    /// It is applied once, when it is activated.
+    ManualProfile(String),
+    /// A layout from the control socket is active; profiles are not selected or applied.
+    ManualLayout,
+}
+
+impl Mode {
+    /// The mode the daemon starts in and returns to when the config is reloaded.
+    pub fn from_config(config: &Config) -> Self {
+        if config.daemon.auto_apply {
+            Self::Auto
+        } else {
+            Self::Paused
+        }
+    }
+
+    pub fn manual_profile(&self) -> Option<&str> {
+        match self {
+            Self::ManualProfile(profile_id) => Some(profile_id),
+            Self::Auto | Self::Paused | Self::ManualLayout => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DaemonState {
     pub config: Config,
+    pub mode: Mode,
     pub outputs: Vec<NiriOutput>,
     pub selected_profile: Option<String>,
-    pub manual_profile: Option<String>,
-    pub manual_layout: bool,
-    pub auto_apply: bool,
     pub last_apply: Option<LastApply>,
 }
 
 impl DaemonState {
     pub fn new(config: Config) -> Self {
         Self {
-            auto_apply: config.daemon.auto_apply,
+            mode: Mode::from_config(&config),
             config,
             outputs: Vec::new(),
             selected_profile: None,
-            manual_profile: None,
-            manual_layout: false,
             last_apply: None,
+        }
+    }
+
+    /// Replaces the config and returns to the mode it configures, which ends a manual
+    /// profile or manual layout.
+    pub fn reload(&mut self, config: Config) {
+        self.mode = Mode::from_config(&config);
+        self.config = config;
+    }
+
+    /// Stops applying profiles automatically. A manual profile or layout stays active.
+    pub fn pause(&mut self) {
+        if self.mode == Mode::Auto {
+            self.mode = Mode::Paused;
         }
     }
 }
@@ -105,18 +147,19 @@ pub fn reconcile_outputs(
     outputs: Vec<NiriOutput>,
     dry_run: bool,
 ) -> Result<ReconcileOutcome, DaemonError> {
-    reconcile_outputs_with_mode(client, state, outputs, dry_run, false)
+    reconcile_outputs_with(client, state, outputs, dry_run, false)
 }
 
+/// Reconciles and applies the selected profile even when automatic loading is paused.
 pub fn reconcile_outputs_for_manual_apply(
     client: &mut impl NiriClient,
     state: &mut DaemonState,
     outputs: Vec<NiriOutput>,
 ) -> Result<ReconcileOutcome, DaemonError> {
-    reconcile_outputs_with_mode(client, state, outputs, false, true)
+    reconcile_outputs_with(client, state, outputs, false, true)
 }
 
-fn reconcile_outputs_with_mode(
+fn reconcile_outputs_with(
     client: &mut impl NiriClient,
     state: &mut DaemonState,
     outputs: Vec<NiriOutput>,
@@ -125,9 +168,9 @@ fn reconcile_outputs_with_mode(
 ) -> Result<ReconcileOutcome, DaemonError> {
     state.outputs = outputs;
 
-    if state.manual_layout && !state.auto_apply && !force_apply {
+    if state.mode == Mode::ManualLayout && !force_apply {
         state.selected_profile = None;
-        debug!("manual layout active; skipping automatic profile selection");
+        debug!("manual layout active; skipping profile selection");
         return Ok(ReconcileOutcome {
             profile_id: None,
             applied: false,
@@ -138,11 +181,7 @@ fn reconcile_outputs_with_mode(
         });
     }
 
-    let selected = select_profile(
-        &state.config,
-        &state.outputs,
-        state.manual_profile.as_deref(),
-    );
+    let selected = select_profile(&state.config, &state.outputs, state.mode.manual_profile());
     let Some(profile) = selected else {
         state.selected_profile = None;
         debug!("no matching monitor profile");
@@ -180,8 +219,8 @@ fn reconcile_outputs_with_mode(
         });
     }
 
-    if !state.auto_apply && !force_apply {
-        info!(profile_id = %plan.profile_id, "auto-apply disabled; selected profile only");
+    if state.mode != Mode::Auto && !force_apply {
+        info!(profile_id = %plan.profile_id, "automatic loading paused; selected profile only");
         return Ok(ReconcileOutcome {
             profile_id: Some(plan.profile_id),
             applied: false,
@@ -363,6 +402,45 @@ mod tests {
 
         assert!(!outcome.applied);
         assert!(outcome.dry_run_output.unwrap().contains("profile: home"));
+        assert!(client.actions.is_empty());
+    }
+
+    #[test]
+    fn pause_keeps_manual_overrides() {
+        let mut state = DaemonState::new(config());
+        state.pause();
+        assert_eq!(state.mode, Mode::Paused);
+
+        state.mode = Mode::ManualLayout;
+        state.pause();
+        assert_eq!(state.mode, Mode::ManualLayout);
+    }
+
+    #[test]
+    fn manual_layout_mode_does_not_select_or_apply_profiles() {
+        let mut client = FakeClient::new(vec![output("DP-1", 0)]);
+        let mut state = DaemonState::new(config());
+        state.mode = Mode::ManualLayout;
+
+        let outcome =
+            reconcile_once(&mut client, &mut state, false).expect("reconcile should pass");
+
+        assert!(outcome.skipped);
+        assert_eq!(state.selected_profile, None);
+        assert!(client.actions.is_empty());
+    }
+
+    #[test]
+    fn paused_mode_selects_without_applying() {
+        let mut client = FakeClient::new(vec![output("DP-1", 0)]);
+        let mut state = DaemonState::new(config());
+        state.mode = Mode::Paused;
+
+        let outcome =
+            reconcile_once(&mut client, &mut state, false).expect("reconcile should pass");
+
+        assert!(outcome.skipped);
+        assert_eq!(state.selected_profile.as_deref(), Some("home"));
         assert!(client.actions.is_empty());
     }
 

@@ -1,6 +1,6 @@
 use crate::config::{ConfigError, load_config};
 use crate::daemon::{
-    DaemonError, DaemonState, LastApply, reconcile_once, reconcile_outputs_for_manual_apply,
+    DaemonError, DaemonState, LastApply, Mode, reconcile_once, reconcile_outputs_for_manual_apply,
 };
 use crate::matching::profile_matches_outputs;
 use crate::model::{Position, Profile};
@@ -258,9 +258,7 @@ fn reload_config(
 ) -> ControlResponse {
     match load_config(config_path) {
         Ok(config) => {
-            let auto_apply = config.daemon.auto_apply;
-            state.config = config;
-            state.auto_apply = auto_apply;
+            state.reload(config);
             reconcile_to_status(state, client)
         }
         Err(error) => error_from_config(error),
@@ -272,12 +270,11 @@ fn set_auto_mode(
     client: &mut impl NiriClient,
     enabled: bool,
 ) -> ControlResponse {
-    state.auto_apply = enabled;
     if enabled {
-        state.manual_profile = None;
-        state.manual_layout = false;
+        state.mode = Mode::Auto;
         reconcile_to_status(state, client)
     } else {
+        state.pause();
         ControlResponse::ok(status_data(state))
     }
 }
@@ -305,9 +302,7 @@ fn activate_profile(
         );
     }
 
-    state.auto_apply = false;
-    state.manual_layout = false;
-    state.manual_profile = Some(profile_id);
+    state.mode = Mode::ManualProfile(profile_id);
     match reconcile_outputs_for_manual_apply(client, state, outputs) {
         Ok(_) => ControlResponse::ok(status_data(state)),
         Err(error) => error_from_daemon(error),
@@ -315,9 +310,7 @@ fn activate_profile(
 }
 
 fn clear_manual_profile(state: &mut DaemonState, client: &mut impl NiriClient) -> ControlResponse {
-    state.manual_profile = None;
-    state.manual_layout = false;
-    state.auto_apply = true;
+    state.mode = Mode::Auto;
     reconcile_to_status(state, client)
 }
 
@@ -414,9 +407,7 @@ fn apply_manual_layout(
         warnings: Vec::new(),
     };
 
-    state.auto_apply = false;
-    state.manual_profile = None;
-    state.manual_layout = true;
+    state.mode = Mode::ManualLayout;
     state.selected_profile = None;
 
     match execute_apply_plan(client, &plan) {
@@ -468,10 +459,10 @@ fn reconcile_to_status(state: &mut DaemonState, client: &mut impl NiriClient) ->
 
 fn status_data(state: &DaemonState) -> StatusData {
     StatusData {
-        auto_apply: state.auto_apply,
+        auto_apply: state.mode == Mode::Auto,
         selected_profile: state.selected_profile.clone(),
-        manual_profile: state.manual_profile.clone(),
-        manual_layout: state.manual_layout,
+        manual_profile: state.mode.manual_profile().map(str::to_owned),
+        manual_layout: state.mode == Mode::ManualLayout,
         outputs: state.outputs.clone(),
         last_apply: state.last_apply.clone(),
     }
@@ -563,9 +554,7 @@ mod tests {
         );
 
         assert!(response.ok);
-        assert_eq!(state.manual_profile.as_deref(), Some("home"));
-        assert!(!state.auto_apply);
-        assert!(!state.manual_layout);
+        assert_eq!(state.mode, Mode::ManualProfile("home".to_string()));
         assert_eq!(
             client.actions,
             vec![("DP-1".to_string(), OutputAction::Scale(1.5))]
@@ -575,7 +564,7 @@ mod tests {
     #[test]
     fn manual_activation_applies_when_auto_apply_is_disabled() {
         let mut state = DaemonState::new(config("home"));
-        state.auto_apply = false;
+        state.mode = Mode::Paused;
         let mut client = FakeClient::new(vec![output("DP-1")]);
 
         let response = handle_control_request(
@@ -588,7 +577,7 @@ mod tests {
         );
 
         assert!(response.ok);
-        assert_eq!(state.manual_profile.as_deref(), Some("home"));
+        assert_eq!(state.mode, Mode::ManualProfile("home".to_string()));
         assert_eq!(
             client.actions,
             vec![("DP-1".to_string(), OutputAction::Scale(1.5))]
@@ -613,9 +602,7 @@ mod tests {
         );
 
         assert!(response.ok);
-        assert!(!state.auto_apply);
-        assert!(state.manual_layout);
-        assert_eq!(state.manual_profile, None);
+        assert_eq!(state.mode, Mode::ManualLayout);
         assert_eq!(state.selected_profile, None);
         assert_eq!(client.actions.len(), 1);
         assert_eq!(
@@ -649,8 +636,7 @@ mod tests {
         assert!(!response.ok);
         assert_eq!(response.error.unwrap().code, ErrorCode::LayoutOverlaps);
         assert!(client.actions.is_empty());
-        assert!(state.auto_apply);
-        assert!(!state.manual_layout);
+        assert_eq!(state.mode, Mode::Auto);
     }
 
     #[test]
@@ -699,8 +685,7 @@ mod tests {
     #[test]
     fn enabling_auto_apply_clears_manual_layout() {
         let mut state = DaemonState::new(config("home"));
-        state.auto_apply = false;
-        state.manual_layout = true;
+        state.mode = Mode::ManualLayout;
         let mut client = FakeClient::new(vec![output("DP-1")]);
 
         let response = handle_control_request(
@@ -711,9 +696,7 @@ mod tests {
         );
 
         assert!(response.ok);
-        assert!(state.auto_apply);
-        assert!(!state.manual_layout);
-        assert_eq!(state.manual_profile, None);
+        assert_eq!(state.mode, Mode::Auto);
         assert_eq!(state.selected_profile.as_deref(), Some("home"));
     }
 
@@ -748,6 +731,60 @@ mod tests {
         let _ = fs::remove_file(path);
         assert!(response.ok);
         assert_eq!(state.config.profiles[0].id, "office");
+    }
+
+    #[test]
+    fn reload_config_ends_manual_layout_mode() {
+        let path = temp_config_path();
+        fs::write(&path, config_toml("home")).unwrap();
+        let mut state = DaemonState::new(config("home"));
+        let mut client = FakeClient::new(vec![output("DP-1"), output("DP-2")]);
+        let manual_layout = handle_control_request(
+            ControlRequest::ApplyManualLayout {
+                placements: vec![ManualOutputPlacement {
+                    output: "DP-2".to_string(),
+                    position: Position { x: 3_440, y: 0 },
+                }],
+            },
+            &mut state,
+            &mut client,
+            &path,
+        );
+
+        let response =
+            handle_control_request(ControlRequest::ReloadConfig, &mut state, &mut client, &path);
+
+        let _ = fs::remove_file(path);
+        assert!(manual_layout.ok);
+        let status = response.data.unwrap();
+        assert_eq!(status["auto_apply"], true);
+        assert_eq!(status["manual_layout"], false);
+        assert_eq!(status["selected_profile"], "home");
+    }
+
+    #[test]
+    fn reload_config_drops_manual_profile() {
+        let path = temp_config_path();
+        fs::write(&path, config_toml("home")).unwrap();
+        let mut state = DaemonState::new(config("home"));
+        let mut client = FakeClient::new(vec![output("DP-1")]);
+        let activation = handle_control_request(
+            ControlRequest::ActivateProfile {
+                profile_id: "home".to_string(),
+            },
+            &mut state,
+            &mut client,
+            &path,
+        );
+
+        let response =
+            handle_control_request(ControlRequest::ReloadConfig, &mut state, &mut client, &path);
+
+        let _ = fs::remove_file(path);
+        assert!(activation.ok);
+        let status = response.data.unwrap();
+        assert_eq!(status["auto_apply"], true);
+        assert_eq!(status["manual_profile"], serde_json::Value::Null);
     }
 
     fn config(id: &str) -> Config {

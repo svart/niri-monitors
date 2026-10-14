@@ -132,10 +132,10 @@ Status data contains:
 
 | Field | Meaning |
 | --- | --- |
-| `auto_apply` | Current runtime automatic profile loading state. |
+| `auto_apply` | `true` in automatic mode. See Manual And Automatic Modes. |
 | `selected_profile` | Profile selected by the latest reconcile, if any. |
-| `manual_profile` | Requested manual profile id, if any. |
-| `manual_layout` | Whether a manual runtime layout is active. |
+| `manual_profile` | Profile id in manual profile mode, otherwise `null`. |
+| `manual_layout` | `true` in manual layout mode. |
 | `outputs` | Last daemon-observed niri outputs. |
 | `last_apply` | Result of the latest reconcile that selected a profile, with `profile_id`, `success`, `warnings`, and `error` when `success` is `false`. A reconcile with nothing to change counts as a success. |
 
@@ -145,13 +145,24 @@ Error codes are serialized as `BAD_REQUEST`, `PROFILE_NOT_FOUND`, `PROFILE_NOT_M
 
 ### Manual And Automatic Modes
 
-`set_auto_mode` controls runtime automatic profile loading. Enabling it clears any manual profile or manual layout override, then reconciles to the currently matching profile. Disabling it leaves the daemon polling output state but prevents condition-selected profiles from being applied automatically.
+The daemon is always in one of four modes:
 
-`activate_profile` is an explicit manual profile request. It pauses automatic profile loading and reconciles immediately. The selected manual profile wins only while it is enabled and matches connected outputs; otherwise normal enabled-profile selection rules decide whether another profile is selected.
+| Mode | Status fields | On output changes |
+| --- | --- | --- |
+| Automatic | `auto_apply: true` | Selects the best matching profile and applies it. |
+| Paused | `auto_apply: false`, `manual_profile: null`, `manual_layout: false` | Selects the best matching profile but does not apply it. |
+| Manual profile | `manual_profile: "<id>"` | Like paused, but the manual profile is selected while it is enabled and matches connected outputs. Otherwise normal selection rules apply. The manual profile is applied once, when it is activated. |
+| Manual layout | `manual_layout: true` | Does not select or apply profiles, so the next poll does not overwrite the layout. |
+
+Mode changes:
+
+- At startup and on `reload_config`, the mode is automatic if `daemon.auto_apply = true` and paused otherwise. A reload ends a manual profile or manual layout. The GUI relies on this: after it saves a config, its reload request lets the daemon apply the saved profiles.
+- `set_auto_mode` with `enabled: true` and `clear_manual_profile` both switch to automatic, then reconcile.
+- `set_auto_mode` with `enabled: false` switches automatic to paused. A manual profile or manual layout stays active.
+- `activate_profile` switches to manual profile, then reconciles and applies the profile even though automatic loading is paused.
+- `apply_manual_layout` switches to manual layout.
 
 `apply_manual_layout` supports ad-hoc runtime layouts through the control socket. It accepts connector/position pairs, rejects empty placement lists, duplicate outputs, disconnected outputs, and disabled outputs, then applies position actions only. Before applying, the daemon normalizes enabled output positions into one enclosing rectangle whose top-left coordinate is `0,0`. Layouts with positive-area output overlap are rejected with `LAYOUT_OVERLAPS`; edge-touching output borders are allowed.
-
-Manual layout mode pauses automatic loading so the next daemon poll does not immediately overwrite the layout. Re-enable automatic loading with `set_auto_mode` or `clear_manual_profile`.
 
 ## Agent Reference
 

@@ -75,7 +75,7 @@ niri msg --json outputs
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `auto_apply` | boolean | `true` | Apply the selected profile automatically. If `false`, the daemon still observes outputs but applies profiles only through explicit control-socket actions. |
+| `auto_apply` | boolean | `true` | Apply the selected profile automatically. If `false`, the daemon still observes outputs but applies profiles only through explicit control-socket actions. Sets the daemon mode at startup and on every config reload. |
 | `poll_interval_ms` | integer | `1500` | Delay between output-state polls. |
 | `debounce_ms` | integer | `500` | Delay after an output change before reconciling, to avoid applying during transient hotplug state. |
 | `prevent_disable_all` | boolean | `true` | Refuse plans that would disable every connected output. |
