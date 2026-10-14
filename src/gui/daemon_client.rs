@@ -1,7 +1,8 @@
 use crate::control::{
-    ControlRequest, ControlResponse, ErrorCode, ManualOutputPlacement, PreviewData, StatusData,
+    ControlRequest, ControlResponse, ErrorCode, PreviewData, StatusData,
     default_control_socket_path,
 };
+use crate::model::ManualOutputPlacement;
 use serde::de::DeserializeOwned;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;

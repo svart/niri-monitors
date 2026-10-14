@@ -94,6 +94,13 @@ pub struct Position {
     pub y: i32,
 }
 
+/// Requested runtime position for one connected output, by connector name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManualOutputPlacement {
+    pub output: String,
+    pub position: Position,
+}
+
 fn default_auto_apply() -> bool {
     true
 }

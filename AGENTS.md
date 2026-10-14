@@ -115,7 +115,7 @@ Use these files as source-of-truth anchors before changing docs or behavior:
 | Daemon reconcile loop, dry-run, error handling | `src/daemon.rs` |
 | Control socket JSON protocol and stable error codes | `src/control.rs`, `src/gui/daemon_client.rs` |
 | Niri JSON IPC and output normalization | `src/niri/ipc.rs`, `src/niri/output.rs` |
-| Apply plan safety, diff against current state, action ordering, dry-run formatting | `src/niri/apply.rs` |
+| Apply plan safety, diff against current state, action ordering, manual layout plans, dry-run formatting | `src/niri/apply.rs` |
 | Layout rectangles, snapping, overlap, normalization | `src/placement.rs`, `src/gui/canvas.rs` |
 | GUI user-visible workflow | `src/gui/app.rs`, `src/gui/profile_list.rs`, `src/gui/output_editor.rs` |
 

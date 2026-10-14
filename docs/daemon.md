@@ -100,7 +100,7 @@ Requests use a `type` field with snake_case names:
 | `clear_manual_profile` | none | Clear manual profile/layout state, enable automatic loading, and reconcile once. |
 | `preview_profile` | `profile_id: string` | Build a plan for a saved profile and return actions, warnings, and dry-run text without applying. |
 | `dry_run_profile` | `profile_id: string` | Same response and behavior as `preview_profile`. |
-| `apply_manual_layout` | `placements: array` | Apply position-only changes for connected enabled outputs, normalize the layout to top-left `0,0`, pause automatic loading, and mark runtime state as manual layout. |
+| `apply_manual_layout` | `placements: array` | Move connected enabled outputs, normalize the layout to top-left `0,0`, and switch to manual layout mode. |
 
 Example requests:
 
@@ -162,14 +162,14 @@ Mode changes:
 - `activate_profile` switches to manual profile, then reconciles and applies the profile even though automatic loading is paused.
 - `apply_manual_layout` switches to manual layout.
 
-`apply_manual_layout` supports ad-hoc runtime layouts through the control socket. It accepts connector/position pairs, rejects empty placement lists, duplicate outputs, disconnected outputs, and disabled outputs, then applies position actions only. Before applying, the daemon normalizes enabled output positions into one enclosing rectangle whose top-left coordinate is `0,0`. Layouts with positive-area output overlap are rejected with `LAYOUT_OVERLAPS`; edge-touching output borders are allowed.
+`apply_manual_layout` supports ad-hoc runtime layouts through the control socket. It accepts connector/position pairs, rejects empty placement lists, duplicate outputs, disconnected outputs, and disabled outputs with `BAD_REQUEST`, then applies position actions only. Before applying, the daemon normalizes enabled output positions into one enclosing rectangle whose top-left coordinate is `0,0`, so outputs without a placement can move too. Outputs already at their final position get no action. Layouts with positive-area output overlap are rejected with `LAYOUT_OVERLAPS`; edge-touching output borders are allowed. A rejected layout does not change the mode.
 
 ## Agent Reference
 
 Implementation entrypoints:
 
 - CLI parsing and startup: `src/bin/niri-monitorsd.rs`.
-- Daemon state and reconcile loop: `src/daemon.rs`.
+- Daemon state, modes, reconcile loop, and manual layout apply: `src/daemon.rs`.
 - Profile selection: `src/matching.rs`.
 - Apply plan validation, ordering, dry-run formatting, and execution: `src/niri/apply.rs`.
 - Control request/response types and handlers: `src/control.rs`.

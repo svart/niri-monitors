@@ -1,7 +1,8 @@
 use crate::matching::select_profile;
-use crate::model::Config;
+use crate::model::{Config, ManualOutputPlacement};
 use crate::niri::apply::{
-    ApplyExecutionError, ApplyPlanError, build_apply_plan, dry_run_apply_plan, execute_apply_plan,
+    ApplyExecutionError, ApplyExecutionReport, ApplyPlan, ApplyPlanError, ManualLayoutError,
+    build_apply_plan, build_manual_layout_plan, dry_run_apply_plan, execute_apply_plan,
     format_dry_run,
 };
 use crate::niri::ipc::{NiriClient, NiriError};
@@ -128,6 +129,8 @@ pub enum DaemonError {
     Plan(#[from] ApplyPlanError),
     #[error("failed to apply plan: {0}")]
     Apply(#[from] ApplyExecutionError),
+    #[error(transparent)]
+    ManualLayout(#[from] ManualLayoutError),
     #[error("daemon state lock poisoned")]
     StateLock,
 }
@@ -247,9 +250,43 @@ fn reconcile_outputs_with(
         });
     }
 
-    match execute_apply_plan(client, &plan) {
+    let report = execute_and_record(client, state, &plan)?;
+    info!(profile_id = %report.profile_id, actions = report.applied_actions, "applied monitor profile");
+    Ok(ReconcileOutcome {
+        profile_id: Some(report.profile_id),
+        applied: true,
+        dry_run: false,
+        skipped: false,
+        warnings: report.warnings,
+        dry_run_output: None,
+    })
+}
+
+/// Moves enabled outputs to `placements` and switches to manual layout mode, so profiles
+/// are not applied over the layout. Invalid or overlapping layouts change nothing.
+pub fn apply_manual_layout(
+    client: &mut impl NiriClient,
+    state: &mut DaemonState,
+    placements: &[ManualOutputPlacement],
+) -> Result<(), DaemonError> {
+    let outputs = client.outputs()?;
+    let plan = build_manual_layout_plan(&outputs, placements)?;
+
+    state.mode = Mode::ManualLayout;
+    state.selected_profile = None;
+    state.outputs = outputs;
+    execute_and_record(client, state, &plan)?;
+    Ok(())
+}
+
+/// Executes `plan` and records the result in `last_apply`.
+fn execute_and_record(
+    client: &mut impl NiriClient,
+    state: &mut DaemonState,
+    plan: &ApplyPlan,
+) -> Result<ApplyExecutionReport, DaemonError> {
+    match execute_apply_plan(client, plan) {
         Ok(report) => {
-            info!(profile_id = %report.profile_id, actions = report.applied_actions, "applied monitor profile");
             state.last_apply = Some(LastApply::succeeded(
                 report.profile_id.clone(),
                 report.warnings.clone(),
@@ -257,17 +294,14 @@ fn reconcile_outputs_with(
             // Keep what niri reports after the apply, so the poll loop does not
             // mistake this apply for an output change.
             state.outputs = client.outputs()?;
-            Ok(ReconcileOutcome {
-                profile_id: Some(report.profile_id),
-                applied: true,
-                dry_run: false,
-                skipped: false,
-                warnings: report.warnings,
-                dry_run_output: None,
-            })
+            Ok(report)
         }
         Err(error) => {
-            state.last_apply = Some(LastApply::failed(plan.profile_id, warnings, &error));
+            state.last_apply = Some(LastApply::failed(
+                plan.profile_id.clone(),
+                plan.warnings.clone(),
+                &error,
+            ));
             Err(DaemonError::Apply(error))
         }
     }

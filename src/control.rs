@@ -1,21 +1,17 @@
 use crate::config::{ConfigError, load_config};
 use crate::daemon::{
-    DaemonError, DaemonState, LastApply, Mode, reconcile_once, reconcile_outputs_for_manual_apply,
+    DaemonError, DaemonState, LastApply, Mode, apply_manual_layout, reconcile_once,
+    reconcile_outputs_for_manual_apply,
 };
 use crate::matching::profile_matches_outputs;
-use crate::model::{Position, Profile};
+use crate::model::{ManualOutputPlacement, Profile};
 use crate::niri::apply::{
-    ApplyPlan, ApplyPlanError, PlannedOutputAction, build_apply_plan, execute_apply_plan,
-    format_dry_run,
+    ApplyPlanError, ManualLayoutError, PlannedOutputAction, build_apply_plan, format_dry_run,
 };
-use crate::niri::ipc::{NiriClient, NiriError, OutputAction, SocketNiriClient};
+use crate::niri::ipc::{NiriClient, NiriError, SocketNiriClient};
 use crate::niri::output::NiriOutput;
-use crate::placement::{
-    derive_connected_output_rects, first_overlap_message, normalize_output_rect_positions,
-};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -47,12 +43,6 @@ pub enum ControlRequest {
     DryRunProfile {
         profile_id: String,
     },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManualOutputPlacement {
-    pub output: String,
-    pub position: Position,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -195,7 +185,10 @@ pub fn handle_control_request(
             activate_profile(state, client, profile_id)
         }
         ControlRequest::ApplyManualLayout { placements } => {
-            apply_manual_layout(state, client, placements)
+            match apply_manual_layout(client, state, &placements) {
+                Ok(()) => ControlResponse::ok(status_data(state)),
+                Err(error) => error_from_daemon(error),
+            }
         }
         ControlRequest::ClearManualProfile => clear_manual_profile(state, client),
         ControlRequest::PreviewProfile { profile_id }
@@ -314,115 +307,6 @@ fn clear_manual_profile(state: &mut DaemonState, client: &mut impl NiriClient) -
     reconcile_to_status(state, client)
 }
 
-fn apply_manual_layout(
-    state: &mut DaemonState,
-    client: &mut impl NiriClient,
-    placements: Vec<ManualOutputPlacement>,
-) -> ControlResponse {
-    if placements.is_empty() {
-        return ControlResponse::error(ErrorCode::BadRequest, "manual layout has no placements");
-    }
-
-    let outputs = match client.outputs() {
-        Ok(outputs) => outputs,
-        Err(error) => return error_from_niri(error),
-    };
-    let mut planned_outputs = outputs.clone();
-    let mut seen_outputs = HashSet::new();
-
-    for placement in &placements {
-        if !seen_outputs.insert(placement.output.clone()) {
-            return ControlResponse::error(
-                ErrorCode::BadRequest,
-                format!("duplicate manual layout placement for {}", placement.output),
-            );
-        }
-
-        let Some(output) = outputs
-            .iter()
-            .find(|output| output.connector == placement.output)
-        else {
-            return ControlResponse::error(
-                ErrorCode::BadRequest,
-                format!(
-                    "manual layout output is not connected: {}",
-                    placement.output
-                ),
-            );
-        };
-
-        if output.logical.is_none() {
-            return ControlResponse::error(
-                ErrorCode::BadRequest,
-                format!("manual layout output is disabled: {}", placement.output),
-            );
-        }
-
-        if let Some(output) = planned_outputs
-            .iter_mut()
-            .find(|output| output.connector == placement.output)
-            && let Some(logical) = &mut output.logical
-        {
-            logical.x = placement.position.x;
-            logical.y = placement.position.y;
-        }
-    }
-
-    let mut rects = derive_connected_output_rects(&planned_outputs);
-    normalize_output_rect_positions(&mut rects);
-
-    if let Some(message) = first_overlap_message(&rects) {
-        return ControlResponse::error(
-            ErrorCode::LayoutOverlaps,
-            format!("manual layout has overlapping outputs: {message}"),
-        );
-    }
-
-    for rect in &rects {
-        if let Some(output) = planned_outputs.get_mut(rect.output_index)
-            && let Some(logical) = &mut output.logical
-        {
-            logical.x = rect.x;
-            logical.y = rect.y;
-        }
-    }
-
-    let actions = rects
-        .iter()
-        .filter_map(|rect| {
-            let output = planned_outputs.get(rect.output_index)?;
-            Some(PlannedOutputAction {
-                output: output.connector.clone(),
-                action: OutputAction::Position(Position {
-                    x: rect.x,
-                    y: rect.y,
-                }),
-            })
-        })
-        .collect();
-
-    let plan = ApplyPlan {
-        profile_id: "manual-layout".to_owned(),
-        actions,
-        warnings: Vec::new(),
-    };
-
-    state.mode = Mode::ManualLayout;
-    state.selected_profile = None;
-
-    match execute_apply_plan(client, &plan) {
-        Ok(report) => {
-            state.outputs = planned_outputs;
-            state.last_apply = Some(LastApply::succeeded(report.profile_id, report.warnings));
-            ControlResponse::ok(status_data(state))
-        }
-        Err(error) => {
-            state.last_apply = Some(LastApply::failed(plan.profile_id, Vec::new(), &error));
-            error_from_daemon(DaemonError::Apply(error))
-        }
-    }
-}
-
 fn preview_profile(
     state: &mut DaemonState,
     client: &mut impl NiriClient,
@@ -498,6 +382,16 @@ fn error_from_daemon(error: DaemonError) -> ControlResponse {
         DaemonError::Plan(error) => error_from_plan(error),
         DaemonError::Apply(error) => {
             ControlResponse::error(ErrorCode::ApplyFailed, error.to_string())
+        }
+        DaemonError::ManualLayout(error) => {
+            let code = match error {
+                ManualLayoutError::Overlap(_) => ErrorCode::LayoutOverlaps,
+                ManualLayoutError::Empty
+                | ManualLayoutError::DuplicateOutput(_)
+                | ManualLayoutError::NotConnected(_)
+                | ManualLayoutError::Disabled(_) => ErrorCode::BadRequest,
+            };
+            ControlResponse::error(code, error.to_string())
         }
         DaemonError::StateLock => ControlResponse::error(ErrorCode::StateLock, error.to_string()),
     }
@@ -585,15 +479,15 @@ mod tests {
     }
 
     #[test]
-    fn manual_layout_applies_positions_and_disables_auto_apply() {
+    fn manual_layout_moves_only_changed_outputs_and_enters_manual_layout_mode() {
         let mut state = DaemonState::new(config("home"));
-        let mut client = FakeClient::new(vec![output("DP-1")]);
+        let mut client = FakeClient::new(vec![output("DP-1"), output("DP-2")]);
 
         let response = handle_control_request(
             ControlRequest::ApplyManualLayout {
                 placements: vec![ManualOutputPlacement {
-                    output: "DP-1".to_string(),
-                    position: Position { x: 120, y: 80 },
+                    output: "DP-2".to_string(),
+                    position: Position { x: 3_440, y: 0 },
                 }],
             },
             &mut state,
@@ -604,16 +498,45 @@ mod tests {
         assert!(response.ok);
         assert_eq!(state.mode, Mode::ManualLayout);
         assert_eq!(state.selected_profile, None);
-        assert_eq!(client.actions.len(), 1);
         assert_eq!(
-            client.actions[0],
-            (
-                "DP-1".to_string(),
-                OutputAction::Position(Position { x: 0, y: 0 })
-            )
+            client.actions,
+            vec![(
+                "DP-2".to_string(),
+                OutputAction::Position(Position { x: 3_440, y: 0 })
+            )]
         );
-        assert_eq!(state.outputs[0].logical.as_ref().unwrap().x, 0);
-        assert_eq!(state.outputs[0].logical.as_ref().unwrap().y, 0);
+        assert_eq!(state.outputs[1].logical.as_ref().unwrap().x, 3_440);
+    }
+
+    #[test]
+    fn invalid_manual_layout_placements_are_bad_requests() {
+        let placement = |output: &str| ManualOutputPlacement {
+            output: output.to_string(),
+            position: Position { x: 0, y: 0 },
+        };
+        let mut disabled = output("DP-2");
+        disabled.logical = None;
+
+        for placements in [
+            Vec::new(),
+            vec![placement("DP-1"), placement("DP-1")],
+            vec![placement("HDMI-A-1")],
+            vec![placement("DP-2")],
+        ] {
+            let mut state = DaemonState::new(config("home"));
+            let mut client = FakeClient::new(vec![output("DP-1"), disabled.clone()]);
+
+            let response = handle_control_request(
+                ControlRequest::ApplyManualLayout { placements },
+                &mut state,
+                &mut client,
+                Path::new("unused.toml"),
+            );
+
+            assert_eq!(response.error.unwrap().code, ErrorCode::BadRequest);
+            assert!(client.actions.is_empty());
+            assert_eq!(state.mode, Mode::Auto);
+        }
     }
 
     #[test]
@@ -663,20 +586,12 @@ mod tests {
         );
 
         assert!(response.ok);
-        assert_eq!(client.actions.len(), 2);
         assert_eq!(
-            client.actions[0],
-            (
-                "DP-1".to_string(),
-                OutputAction::Position(Position { x: 0, y: 0 })
-            )
-        );
-        assert_eq!(
-            client.actions[1],
-            (
+            client.actions,
+            vec![(
                 "DP-2".to_string(),
                 OutputAction::Position(Position { x: 3_440, y: 0 })
-            )
+            )]
         );
         assert_eq!(state.outputs[0].logical.as_ref().unwrap().x, 0);
         assert_eq!(state.outputs[1].logical.as_ref().unwrap().x, 3_440);
@@ -906,6 +821,17 @@ position = {{ x = 0, y = 0 }}
             output: &str,
             action: OutputAction,
         ) -> Result<(), NiriError> {
+            // Mirror niri: the next outputs read reports the new position.
+            if let OutputAction::Position(position) = &action
+                && let Some(logical) = self
+                    .outputs
+                    .iter_mut()
+                    .find(|candidate| candidate.connector == output)
+                    .and_then(|candidate| candidate.logical.as_mut())
+            {
+                logical.x = position.x;
+                logical.y = position.y;
+            }
             self.actions.push((output.to_string(), action));
             Ok(())
         }

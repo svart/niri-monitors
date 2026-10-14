@@ -1,6 +1,6 @@
 use crate::config::is_valid_transform;
 use crate::matching::matcher_matches_output;
-use crate::model::{Config, Position, Profile, ProfileOutput};
+use crate::model::{Config, ManualOutputPlacement, Position, Profile, ProfileOutput};
 use crate::niri::ipc::{NiriClient, NiriError, OutputAction};
 use crate::niri::output::{NiriMode, NiriOutput};
 use crate::placement::{
@@ -8,6 +8,7 @@ use crate::placement::{
     placed_output_rect,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -75,6 +76,20 @@ pub enum ApplyPlanError {
     AllOutputsDisabled(String),
     #[error("profile {profile_id} has overlapping output layout: {message}")]
     OverlappingLayout { profile_id: String, message: String },
+}
+
+#[derive(Debug, Error)]
+pub enum ManualLayoutError {
+    #[error("manual layout has no placements")]
+    Empty,
+    #[error("duplicate manual layout placement for {0}")]
+    DuplicateOutput(String),
+    #[error("manual layout output is not connected: {0}")]
+    NotConnected(String),
+    #[error("manual layout output is disabled: {0}")]
+    Disabled(String),
+    #[error("manual layout has overlapping outputs: {0}")]
+    Overlap(String),
 }
 
 pub fn execute_apply_plan(
@@ -313,7 +328,12 @@ pub fn build_apply_plan(
         return Err(ApplyPlanError::AllOutputsDisabled(profile.id.clone()));
     }
 
-    let position_actions = plan_positions(profile, outputs, &placements)?;
+    let position_actions = plan_positions(outputs, &placements).map_err(|message| {
+        ApplyPlanError::OverlappingLayout {
+            profile_id: profile.id.clone(),
+            message,
+        }
+    })?;
 
     let mut actions = Vec::new();
     actions.extend(enable_actions);
@@ -367,17 +387,52 @@ fn target_size(
     ))
 }
 
-/// Normalizes the layout the outputs have after the plan, rejects overlaps, and returns
-/// the position actions needed to reach it.
+/// Builds the position actions that move enabled outputs to `placements`.
+///
+/// The resulting layout is normalized to start at 0,0 like a profile layout, so outputs
+/// without a placement can move too. Outputs already in place get no action.
+pub fn build_manual_layout_plan(
+    outputs: &[NiriOutput],
+    placements: &[ManualOutputPlacement],
+) -> Result<ApplyPlan, ManualLayoutError> {
+    if placements.is_empty() {
+        return Err(ManualLayoutError::Empty);
+    }
+
+    let mut layout: Vec<Option<Placement>> = outputs.iter().map(Placement::current).collect();
+    let mut placed = HashSet::new();
+    for placement in placements {
+        let name = &placement.output;
+        if !placed.insert(name) {
+            return Err(ManualLayoutError::DuplicateOutput(name.clone()));
+        }
+        let index = outputs
+            .iter()
+            .position(|output| output.connector == *name)
+            .ok_or_else(|| ManualLayoutError::NotConnected(name.clone()))?;
+        let current = layout[index]
+            .as_mut()
+            .ok_or_else(|| ManualLayoutError::Disabled(name.clone()))?;
+        current.position = Some(placement.position);
+    }
+
+    Ok(ApplyPlan {
+        profile_id: "manual-layout".to_owned(),
+        actions: plan_positions(outputs, &layout).map_err(ManualLayoutError::Overlap)?,
+        warnings: Vec::new(),
+    })
+}
+
+/// Normalizes the layout the outputs have after a plan, rejects overlaps, and returns
+/// the position actions needed to reach it. The error is the overlap message.
 ///
 /// Outputs that niri places itself (enabled without a position) are left out. An output
 /// with an unknown size is checked by its top-left corner only, because it covers at least
 /// that point.
 fn plan_positions(
-    profile: &Profile,
     outputs: &[NiriOutput],
     placements: &[Option<Placement>],
-) -> Result<Vec<PlannedOutputAction>, ApplyPlanError> {
+) -> Result<Vec<PlannedOutputAction>, String> {
     let mut rects: Vec<OutputRect> = outputs
         .iter()
         .zip(placements)
@@ -395,10 +450,7 @@ fn plan_positions(
     normalize_output_rect_positions(&mut rects);
 
     if let Some(message) = first_overlap_message(&rects) {
-        return Err(ApplyPlanError::OverlappingLayout {
-            profile_id: profile.id.clone(),
-            message,
-        });
+        return Err(message);
     }
 
     Ok(rects

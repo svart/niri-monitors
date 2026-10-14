@@ -1,14 +1,14 @@
 use crate::config::{
     default_config_path, load_config_or_empty, save_config_with_backup, validate_config,
 };
-use crate::control::{ManualOutputPlacement, PreviewData};
+use crate::control::PreviewData;
 use crate::gui::canvas::{
     CanvasState, ManualLayoutDraft, show_editable_live_monitor_canvas, show_monitor_canvas,
 };
 use crate::gui::daemon_client::{DaemonClient, DaemonConnectionState, fetch_daemon_status};
 use crate::gui::output_editor::show_output_strip;
 use crate::gui::profile_list::{build_new_profile, remove_profile};
-use crate::model::{Config, Profile};
+use crate::model::{Config, ManualOutputPlacement, Profile};
 use crate::niri::ipc::{NiriClient, OutputAction, SocketNiriClient};
 use crate::niri::output::NiriOutput;
 use egui::{Color32, RichText, Stroke, Vec2};
