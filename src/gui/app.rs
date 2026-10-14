@@ -9,6 +9,7 @@ use crate::gui::daemon_client::{DaemonClient, DaemonConnectionState, fetch_daemo
 use crate::gui::output_editor::show_output_strip;
 use crate::gui::poller::Poller;
 use crate::gui::profile_list::{build_new_profile, remove_profile};
+use crate::gui::{ERROR_COLOR, OK_COLOR, WARNING_COLOR};
 use crate::model::{Config, ManualOutputPlacement, Profile};
 use crate::niri::ipc::{NiriClient, OutputAction, SocketNiriClient};
 use crate::niri::output::NiriOutput;
@@ -19,10 +20,6 @@ use std::time::Duration;
 
 const DAEMON_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const LIVE_OUTPUT_POLL_INTERVAL: Duration = Duration::from_secs(1);
-
-const OK_COLOR: Color32 = Color32::from_rgb(72, 143, 92);
-const WARNING_COLOR: Color32 = Color32::from_rgb(184, 111, 36);
-const ERROR_COLOR: Color32 = Color32::from_rgb(184, 67, 67);
 
 const APP_BG: Color32 = Color32::from_rgb(47, 47, 47);
 const STRIP_BG: Color32 = Color32::from_rgb(47, 47, 47);
