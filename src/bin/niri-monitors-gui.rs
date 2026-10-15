@@ -6,6 +6,7 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 900.0])
             .with_min_inner_size([640.0, 480.0]),
+        persist_window: false,
         ..Default::default()
     };
 

@@ -37,12 +37,12 @@ The GUI currently has no CLI flag for an alternate config path.
 
 ## Layout
 
-- Header: the app name, a daemon status pill, a `niri unreachable` pill when niri cannot be reached, and `Save`. Hover a pill for details.
+- Header: the app name, a daemon status pill, a `niri unreachable` pill when niri cannot be reached, `Save`, and the theme button. Hover a pill for details.
 - Sidebar (left): the profile list, or the connected outputs (including outputs that are off) when no profiles exist.
 - Canvas (center): the monitor arrangement. A dot grid fills the background and a small crosshair marks logical `0, 0`.
 - Inspector (right): settings for the selected output, the layout check, and the plan preview. Below 1000 px of window width, the inspector moves under the canvas.
 
-The GUI follows the system light or dark setting.
+The GUI starts in the light theme. The sun or moon button at the right end of the header switches between the light and dark themes. The GUI keeps your choice and uses it again at the next start. It stores the choice in `$XDG_DATA_HOME/monitoradlo/app.ron`, or in `$HOME/.local/share/monitoradlo/app.ron` when `XDG_DATA_HOME` is not set. To go back to the light default, delete that file. The GUI does not keep the window size or position.
 
 ### Daemon status pill
 
@@ -128,7 +128,7 @@ If the daemon is unavailable, profile editing and direct live-layout apply stay 
 Implementation entrypoints:
 
 - GUI app state, polling, save, actions, shortcuts, and panel layout: `src/gui/app.rs`.
-- Palettes, widget styling, and shared widgets (cards, pills, buttons): `src/gui/theme.rs`.
+- Palettes, widget styling, shared widgets (cards, pills, buttons), and the stored theme choice: `src/gui/theme.rs`.
 - Header and daemon status pill text: `src/gui/header.rs`.
 - Profile and output lists: `src/gui/sidebar.rs`.
 - Output settings and live-layout controls: `src/gui/inspector.rs`.

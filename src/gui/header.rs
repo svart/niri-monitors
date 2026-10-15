@@ -91,16 +91,23 @@ pub fn daemon_summary(state: &DaemonConnectionState, profiles: &[Profile]) -> Da
     DaemonSummary { tone, text, detail }
 }
 
-/// Draws the header and returns whether Save was clicked.
+/// What the user did in the header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderAction {
+    Save,
+    ToggleTheme,
+}
+
+/// Draws the header and returns what the user did.
 pub fn show_header(
     ui: &mut egui::Ui,
     daemon: &DaemonSummary,
     niri_error: Option<&str>,
     dirty: bool,
     can_save: bool,
-) -> bool {
+) -> Option<HeaderAction> {
     let palette = theme::palette(ui.ctx());
-    let mut save_clicked = false;
+    let mut action = None;
     ui.horizontal(|ui| {
         ui.label(RichText::new("Monitors").heading().strong());
         ui.add_space(8.0);
@@ -110,6 +117,10 @@ pub fn show_header(
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if theme::theme_toggle(ui).clicked() {
+                action = Some(HeaderAction::ToggleTheme);
+            }
+            ui.add_space(4.0);
             let save = ui
                 .add_enabled(can_save, theme::primary_button(ui, "Save"))
                 .on_hover_text("Write the config file (Ctrl+S)")
@@ -118,13 +129,15 @@ pub fn show_header(
                 } else {
                     "No unsaved changes"
                 });
-            save_clicked = save.clicked();
+            if save.clicked() {
+                action = Some(HeaderAction::Save);
+            }
             if dirty {
                 ui.label(RichText::new("Unsaved changes").color(palette.warning));
             }
         });
     });
-    save_clicked
+    action
 }
 
 #[cfg(test)]

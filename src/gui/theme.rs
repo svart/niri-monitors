@@ -2,8 +2,11 @@
 
 use eframe::egui::{
     self, Color32, CornerRadius, FontId, Margin, RichText, Shadow, Stroke, TextStyle, Theme,
-    ThemePreference, Visuals, WidgetText,
+    Visuals, WidgetText,
 };
+
+/// eframe storage key for the theme picked in the header.
+const STORAGE_KEY: &str = "theme";
 
 #[derive(Debug, Clone, Copy)]
 pub struct Palette {
@@ -82,8 +85,34 @@ pub fn palette(ctx: &egui::Context) -> &'static Palette {
     }
 }
 
-/// Installs both palettes and follows the system light or dark setting.
-pub fn install(ctx: &egui::Context) {
+/// The theme saved by [`store`], or light when nothing valid is saved.
+pub fn load(storage: Option<&dyn eframe::Storage>) -> Theme {
+    match storage
+        .and_then(|storage| storage.get_string(STORAGE_KEY))
+        .as_deref()
+    {
+        Some("dark") => Theme::Dark,
+        _ => Theme::Light,
+    }
+}
+
+pub fn store(storage: &mut dyn eframe::Storage, theme: Theme) {
+    let name = match theme {
+        Theme::Dark => "dark",
+        Theme::Light => "light",
+    };
+    storage.set_string(STORAGE_KEY, name.to_owned());
+}
+
+pub fn opposite(theme: Theme) -> Theme {
+    match theme {
+        Theme::Dark => Theme::Light,
+        Theme::Light => Theme::Dark,
+    }
+}
+
+/// Installs both palettes and shows `theme`.
+pub fn install(ctx: &egui::Context, theme: Theme) {
     for (theme, palette) in [(Theme::Dark, &DARK), (Theme::Light, &LIGHT)] {
         ctx.set_visuals_of(theme, visuals(theme, palette));
         ctx.style_mut_of(theme, |style| {
@@ -106,7 +135,7 @@ pub fn install(ctx: &egui::Context) {
                 .insert(TextStyle::Monospace, FontId::monospace(13.0));
         });
     }
-    ctx.set_theme(ThemePreference::System);
+    ctx.set_theme(theme);
 }
 
 fn visuals(theme: Theme, palette: &Palette) -> Visuals {
@@ -211,6 +240,16 @@ pub fn danger_button(ui: &egui::Ui, text: impl Into<String>) -> egui::Button<'st
     egui::Button::new(RichText::new(text).color(Color32::WHITE)).fill(palette.error)
 }
 
+/// Frameless sun or moon button that asks for the other theme.
+pub fn theme_toggle(ui: &mut egui::Ui) -> egui::Response {
+    let (icon, hint) = match ui.ctx().theme() {
+        Theme::Dark => ("☀", "Switch to light theme"),
+        Theme::Light => ("🌙", "Switch to dark theme"),
+    };
+    ui.add(egui::Button::new(RichText::new(icon).size(16.0)).frame(false))
+        .on_hover_text(hint)
+}
+
 pub fn weak(ui: &egui::Ui, text: impl Into<String>) -> RichText {
     RichText::new(text).color(palette(ui.ctx()).text_weak)
 }
@@ -256,4 +295,50 @@ pub fn pill(ui: &mut egui::Ui, tone: Tone, text: impl Into<WidgetText>) -> egui:
 pub fn status_dot(ui: &mut egui::Ui, color: Color32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
     ui.painter().circle_filled(rect.center(), 4.0, color);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[derive(Default)]
+    struct MemoryStorage(HashMap<String, String>);
+
+    impl eframe::Storage for MemoryStorage {
+        fn get_string(&self, key: &str) -> Option<String> {
+            self.0.get(key).cloned()
+        }
+
+        fn set_string(&mut self, key: &str, value: String) {
+            self.0.insert(key.to_owned(), value);
+        }
+
+        fn flush(&mut self) {}
+    }
+
+    #[test]
+    fn theme_is_light_without_storage_or_saved_value() {
+        assert_eq!(load(None), Theme::Light);
+        assert_eq!(load(Some(&MemoryStorage::default())), Theme::Light);
+    }
+
+    #[test]
+    fn stored_theme_is_loaded_back() {
+        let mut storage = MemoryStorage::default();
+        for theme in [Theme::Dark, Theme::Light] {
+            store(&mut storage, theme);
+            assert_eq!(load(Some(&storage)), theme);
+        }
+    }
+
+    #[test]
+    fn unknown_stored_theme_falls_back_to_light() {
+        let mut storage = MemoryStorage::default();
+        storage
+            .0
+            .insert(STORAGE_KEY.to_owned(), "solarized".to_owned());
+
+        assert_eq!(load(Some(&storage)), Theme::Light);
+    }
 }

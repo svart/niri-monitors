@@ -7,7 +7,7 @@ use crate::gui::canvas::{
     show_monitor_canvas,
 };
 use crate::gui::daemon_client::{DaemonClient, DaemonConnectionState, fetch_daemon_status};
-use crate::gui::header::{daemon_summary, show_header};
+use crate::gui::header::{HeaderAction, daemon_summary, show_header};
 use crate::gui::inspector::{
     LiveLayoutAction, LiveLayoutStatus, show_live_layout, show_output_settings,
 };
@@ -63,7 +63,7 @@ pub struct GuiApp {
 
 impl GuiApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        theme::install(&cc.egui_ctx);
+        theme::install(&cc.egui_ctx, theme::load(cc.storage));
         Self::from_default_config_path()
     }
 
@@ -430,20 +430,30 @@ impl GuiApp {
         }
     }
 
-    fn show_header(&mut self, ui: &mut egui::Ui) {
+    fn show_header(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let profiles = self
             .config
             .as_ref()
             .map_or(&[][..], |config| config.profiles.as_slice());
         let summary = daemon_summary(&self.daemon, profiles);
-        if show_header(
+        match show_header(
             ui,
             &summary,
             self.niri_error(),
             self.is_dirty(),
             self.can_save(),
         ) {
-            self.save_draft();
+            Some(HeaderAction::Save) => self.save_draft(),
+            Some(HeaderAction::ToggleTheme) => {
+                let theme = theme::opposite(ui.ctx().theme());
+                ui.ctx().set_theme(theme);
+                // The rest of this frame still uses the palette read at the start of `update`.
+                ui.ctx().request_repaint();
+                if let Some(storage) = frame.storage_mut() {
+                    theme::store(storage, theme);
+                }
+            }
+            None => {}
         }
     }
 
@@ -716,7 +726,7 @@ impl GuiApp {
 }
 
 impl eframe::App for GuiApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.handle_shortcuts(ctx);
         self.refresh_daemon_status();
         self.refresh_live_outputs();
@@ -726,7 +736,7 @@ impl eframe::App for GuiApp {
 
         egui::TopBottomPanel::top("header")
             .frame(theme::panel_frame(palette).inner_margin(Margin::symmetric(16, 10)))
-            .show(ctx, |ui| self.show_header(ui));
+            .show(ctx, |ui| self.show_header(ui, frame));
         if self.load_error.is_some() || self.validation_error.is_some() {
             egui::TopBottomPanel::top("problems")
                 .frame(
@@ -770,6 +780,11 @@ impl eframe::App for GuiApp {
         } else {
             DAEMON_POLL_INTERVAL
         });
+    }
+
+    /// Only the theme is persisted, through `theme::store`.
+    fn persist_egui_memory(&self) -> bool {
+        false
     }
 }
 
