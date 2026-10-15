@@ -1,5 +1,34 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-  <rect x="4" y="4" width="120" height="120" rx="26" fill="#1f2024"/>
-  <rect x="77" y="36" width="34" height="56" rx="5" fill="#2d3139" stroke="#7a8291" stroke-width="3"/>
-  <rect x="17" y="50" width="56" height="38" rx="5" fill="#4c8dff" stroke="#9cc0ff" stroke-width="3"/>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b2d33"/>
+      <stop offset="1" stop-color="#18191c"/>
+    </linearGradient>
+    <linearGradient id="sel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6aa5ff"/>
+      <stop offset="1" stop-color="#3478f0"/>
+    </linearGradient>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4a505d"/>
+      <stop offset="1" stop-color="#343943"/>
+    </linearGradient>
+    <clipPath id="card">
+      <rect x="4" y="4" width="120" height="120" rx="28"/>
+    </clipPath>
+    <pattern id="grid" width="12" height="12" patternUnits="userSpaceOnUse" x="4" y="4">
+      <path d="M12 0V12H0" fill="none" stroke="#ffffff" stroke-opacity="0.05" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <!-- Placement canvas -->
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#bg)"/>
+  <rect x="4" y="4" width="120" height="120" fill="url(#grid)" clip-path="url(#card)"/>
+  <rect x="4.75" y="4.75" width="118.5" height="118.5" rx="27.25" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="1.5"/>
+
+  <!-- Portrait output -->
+  <rect x="80" y="33" width="34" height="62" rx="6" fill="url(#tile)" stroke="#8f98a8" stroke-width="3"/>
+
+  <!-- Selected landscape output, bottom edge snapped to the portrait one -->
+  <rect x="14" y="53" width="62" height="42" rx="6" fill="url(#sel)" stroke="#b4d0ff" stroke-width="3"/>
+  <path d="M20 59h22l-16 16h-6z" fill="#ffffff" fill-opacity="0.18"/>
 </svg>
