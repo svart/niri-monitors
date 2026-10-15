@@ -619,25 +619,24 @@ impl GuiApp {
     fn show_live_inspector(&mut self, ui: &mut egui::Ui) {
         let outputs = self.connected_outputs().to_vec();
         let overlap = self.manual_layout.first_overlap_message(&outputs);
-        let selected_index = self.runtime_canvas.selected_output;
         let status = LiveLayoutStatus {
             has_outputs: !outputs.is_empty(),
             has_changes: !self.manual_layout.changed_placements(&outputs).is_empty(),
             overlap: overlap.as_deref(),
             daemon_running: self.daemon_running(),
-            selected_mode: selected_index
-                .and_then(|index| self.manual_layout.mode(&outputs, index)),
         };
+        let selected_index = self.runtime_canvas.selected_output;
         let selected = selected_index.and_then(|index| outputs.get(index));
+        let mut settings =
+            selected_index.and_then(|index| self.manual_layout.settings(&outputs, index));
 
-        match show_live_layout(ui, selected, &status) {
+        let action = show_live_layout(ui, selected, settings.as_mut(), &status);
+        if let (Some(index), Some(settings)) = (selected_index, settings) {
+            self.manual_layout.set_settings(&outputs, index, settings);
+        }
+        match action {
             Some(LiveLayoutAction::Apply) => self.apply_manual_layout(),
             Some(LiveLayoutAction::Reset) => self.manual_layout.reset(),
-            Some(LiveLayoutAction::SetMode(mode)) => {
-                if let Some(index) = selected_index {
-                    self.manual_layout.set_mode(&outputs, index, mode);
-                }
-            }
             None => {}
         }
     }

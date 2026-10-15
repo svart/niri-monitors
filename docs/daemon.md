@@ -100,7 +100,7 @@ Requests use a `type` field with snake_case names:
 | `clear_manual_profile` | none | Clear manual profile/layout state, enable automatic loading, and reconcile once. |
 | `preview_profile` | `profile_id: string` | Build a plan for a saved profile and return actions, warnings, and dry-run text without applying. |
 | `dry_run_profile` | `profile_id: string` | Same response and behavior as `preview_profile`. |
-| `apply_manual_layout` | `placements: array` | Move connected enabled outputs and optionally change their modes, normalize the layout to top-left `0,0`, and switch to manual layout mode. |
+| `apply_manual_layout` | `placements: array` | Move connected enabled outputs and optionally change their mode, scale, and rotation, normalize the layout to top-left `0,0`, and switch to manual layout mode. |
 
 Example requests:
 
@@ -113,7 +113,7 @@ Example requests:
 ```
 
 ```json
-{"type":"apply_manual_layout","placements":[{"output":"DP-1","position":{"x":0,"y":0},"mode":"2560x1440@59.951"}]}
+{"type":"apply_manual_layout","placements":[{"output":"DP-1","position":{"x":0,"y":0},"mode":"2560x1440@59.951","scale":1.25,"transform":"90"}]}
 ```
 
 Successful responses have this shape:
@@ -162,7 +162,7 @@ Mode changes:
 - `activate_profile` switches to manual profile, then reconciles and applies the profile even though automatic loading is paused.
 - `apply_manual_layout` switches to manual layout.
 
-`apply_manual_layout` supports ad-hoc runtime layouts through the control socket. Each placement has an `output` connector, a `position`, and an optional `mode` in the config format (`WIDTHxHEIGHT` or `WIDTHxHEIGHT@HZ`). The daemon rejects empty placement lists, duplicate outputs, disconnected outputs, disabled outputs, and modes the output does not offer with `BAD_REQUEST`. It then applies mode actions, then position actions; it does not change scale, rotation, or VRR. An output already in the requested mode gets no mode action. The overlap check uses the size an output has in its new mode at its current scale and rotation. If niri picks a new automatic scale for the new mode, the size after the apply can differ. Before applying, the daemon normalizes enabled output positions into one enclosing rectangle whose top-left coordinate is `0,0`, so outputs without a placement can move too. Outputs already at their final position get no action. Layouts with positive-area output overlap are rejected with `LAYOUT_OVERLAPS`; edge-touching output borders are allowed. A rejected layout does not change the daemon mode.
+`apply_manual_layout` supports ad-hoc runtime layouts through the control socket. Each placement has an `output` connector and a `position`. It can also have a `mode`, `scale`, and `transform`, written as in the config file (see `docs/config.md`). A setting that is left out keeps its current value. The daemon rejects these with `BAD_REQUEST`: empty placement lists, duplicate outputs, disconnected outputs, disabled outputs, modes the output does not offer, and scales that are not finite and greater than zero. It then applies mode, scale, rotation, and position actions, in that order. It does not change VRR. A setting that already matches gets no action; a scale within niri's rounding counts as a match. The overlap check uses the size an output has after its new mode, scale, and rotation. If a placement changes the mode but not the scale, niri can pick a new automatic scale, so the size after the apply can differ. Before applying, the daemon normalizes enabled output positions into one enclosing rectangle whose top-left coordinate is `0,0`, so outputs without a placement can move too. Outputs already at their final position get no action. Layouts with positive-area output overlap are rejected with `LAYOUT_OVERLAPS`; edge-touching output borders are allowed. A rejected layout does not change the daemon mode.
 
 ## Agent Reference
 

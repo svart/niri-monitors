@@ -4,7 +4,7 @@ use crate::niri::ipc::{NiriClient, NiriError, OutputAction};
 use crate::niri::output::NiriOutput;
 use crate::placement::{
     OutputRect, SCALE_TOLERANCE, configured_size, first_overlap_message,
-    normalize_output_rect_positions, placed_output_rect, size_in_mode,
+    normalize_output_rect_positions, placed_output_rect, size_after,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -78,6 +78,10 @@ pub enum ManualLayoutError {
     Disabled(String),
     #[error("manual layout output {output} does not offer mode {mode}")]
     UnavailableMode { output: String, mode: ModeSpec },
+    #[error(
+        "manual layout output {output} has invalid scale {scale}; scale must be finite and greater than zero"
+    )]
+    InvalidScale { output: String, scale: f64 },
     #[error("manual layout has overlapping outputs: {0}")]
     Overlap(String),
 }
@@ -315,11 +319,12 @@ pub fn build_apply_plan(
     })
 }
 
-/// Builds the mode and position actions that move enabled outputs to `placements`.
+/// Builds the actions that move enabled outputs to `placements` and change their mode,
+/// scale, and rotation.
 ///
-/// Mode changes come first and keep each output's scale and rotation. The resulting layout
-/// is normalized to start at 0,0 like a profile layout, so outputs without a placement can
-/// move too. Outputs already in place, or already in the requested mode, get no action.
+/// Actions are ordered like a profile plan: modes, scales, rotations, then positions. The
+/// resulting layout is normalized to start at 0,0 like a profile layout, so outputs
+/// without a placement can move too. Settings that already match get no action.
 pub fn build_manual_layout_plan(
     outputs: &[NiriOutput],
     placements: &[ManualOutputPlacement],
@@ -330,7 +335,9 @@ pub fn build_manual_layout_plan(
 
     let mut layout: Vec<Option<Placement>> = outputs.iter().map(Placement::current).collect();
     let mut placed = HashSet::new();
-    let mut actions = Vec::new();
+    let mut mode_actions = Vec::new();
+    let mut scale_actions = Vec::new();
+    let mut transform_actions = Vec::new();
     for placement in placements {
         let name = &placement.output;
         if !placed.insert(name) {
@@ -340,12 +347,15 @@ pub fn build_manual_layout_plan(
             .iter()
             .position(|output| output.connector == *name)
             .ok_or_else(|| ManualLayoutError::NotConnected(name.clone()))?;
+        let output = &outputs[index];
         let current = layout[index]
             .as_mut()
             .ok_or_else(|| ManualLayoutError::Disabled(name.clone()))?;
-        current.position = Some(placement.position);
+        let logical = output
+            .logical
+            .as_ref()
+            .ok_or_else(|| ManualLayoutError::Disabled(name.clone()))?;
 
-        let output = &outputs[index];
         if let Some(mode) = placement.mode {
             if !output.modes.iter().any(|available| available.matches(mode)) {
                 return Err(ManualLayoutError::UnavailableMode {
@@ -357,7 +367,7 @@ pub fn build_manual_layout_plan(
                 .active_mode()
                 .is_some_and(|active| active.matches(mode))
             {
-                actions.push(planned(
+                mode_actions.push(planned(
                     name.clone(),
                     OutputAction::Mode {
                         width: mode.width,
@@ -365,10 +375,32 @@ pub fn build_manual_layout_plan(
                         refresh_millihz: mode.refresh_millihz,
                     },
                 ));
-                current.size = size_in_mode(output, mode);
             }
         }
+        if let Some(scale) = placement.scale {
+            if !scale.is_finite() || scale <= 0.0 {
+                return Err(ManualLayoutError::InvalidScale {
+                    output: name.clone(),
+                    scale,
+                });
+            }
+            if (logical.scale - scale).abs() >= SCALE_TOLERANCE {
+                scale_actions.push(planned(name.clone(), OutputAction::Scale(scale)));
+            }
+        }
+        if let Some(transform) = placement.transform
+            && logical.transform != transform
+        {
+            transform_actions.push(planned(name.clone(), OutputAction::Transform(transform)));
+        }
+
+        current.position = Some(placement.position);
+        current.size = size_after(output, placement.mode, placement.scale, placement.transform);
     }
+
+    let mut actions = mode_actions;
+    actions.extend(scale_actions);
+    actions.extend(transform_actions);
     actions.extend(plan_positions(outputs, &layout).map_err(ManualLayoutError::Overlap)?);
 
     Ok(ApplyPlan {
@@ -891,11 +923,15 @@ mod tests {
                     output: "DP-1".to_string(),
                     position: Position { x: 0, y: 0 },
                     mode: Some("2560x1440@59.951".parse().unwrap()),
+                    scale: None,
+                    transform: None,
                 },
                 ManualOutputPlacement {
                     output: "HDMI-A-1".to_string(),
                     position: Position { x: 2_560, y: 0 },
                     mode: Some("3440x1440@59.973".parse().unwrap()),
+                    scale: None,
+                    transform: None,
                 },
             ],
         )
@@ -921,6 +957,67 @@ mod tests {
     }
 
     #[test]
+    fn manual_layout_changes_scales_and_rotations_before_moving_outputs() {
+        let outputs = vec![output("DP-1", true), output("HDMI-A-1", true)];
+
+        // At scale 2, DP-1 is 1720 wide, so HDMI-A-1 fits right next to it.
+        let plan = build_manual_layout_plan(
+            &outputs,
+            &[
+                ManualOutputPlacement {
+                    output: "DP-1".to_string(),
+                    position: Position { x: 0, y: 0 },
+                    mode: None,
+                    scale: Some(2.0),
+                    transform: None,
+                },
+                ManualOutputPlacement {
+                    output: "HDMI-A-1".to_string(),
+                    position: Position { x: 1_720, y: 0 },
+                    mode: None,
+                    scale: Some(1.001),
+                    transform: Some(Transform::Rotate90),
+                },
+            ],
+        )
+        .expect("plan should build");
+
+        assert_eq!(
+            plan.actions,
+            vec![
+                planned("DP-1".to_string(), OutputAction::Scale(2.0)),
+                planned(
+                    "HDMI-A-1".to_string(),
+                    OutputAction::Transform(Transform::Rotate90),
+                ),
+                planned(
+                    "HDMI-A-1".to_string(),
+                    OutputAction::Position(Position { x: 1_720, y: 0 }),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn manual_layout_rejects_scales_that_are_not_positive() {
+        for scale in [0.0, -1.0, f64::NAN] {
+            let error = build_manual_layout_plan(
+                &[output("DP-1", true)],
+                &[ManualOutputPlacement {
+                    output: "DP-1".to_string(),
+                    position: Position { x: 0, y: 0 },
+                    mode: None,
+                    scale: Some(scale),
+                    transform: None,
+                }],
+            )
+            .expect_err("plan should fail");
+
+            assert!(matches!(error, ManualLayoutError::InvalidScale { .. }));
+        }
+    }
+
+    #[test]
     fn manual_layout_rejects_modes_the_output_does_not_offer() {
         let error = build_manual_layout_plan(
             &[output("DP-1", true)],
@@ -928,6 +1025,8 @@ mod tests {
                 output: "DP-1".to_string(),
                 position: Position { x: 0, y: 0 },
                 mode: Some("1920x1080@60".parse().unwrap()),
+                scale: None,
+                transform: None,
             }],
         )
         .expect_err("plan should fail");

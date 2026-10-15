@@ -94,37 +94,44 @@ pub fn placed_output_rect(
     }
 }
 
-/// Logical size `output` has once `profile_output` is applied. Settings the profile leaves
-/// out keep their current values, and when nothing that affects the size changes, the size
-/// niri reports is used as is. `None` when the mode or the scale is unknown, which happens
-/// for an output that is off and whose profile entry does not set both.
+/// Logical size `output` has once `profile_output` is applied. `None` when the mode or the
+/// scale is unknown, which happens for an output that is off and whose profile entry does
+/// not set both.
 pub fn configured_size(output: &NiriOutput, profile_output: &ProfileOutput) -> Option<(u32, u32)> {
+    size_after(
+        output,
+        profile_output.mode,
+        profile_output.scale,
+        profile_output.transform,
+    )
+}
+
+/// Logical size `output` has after `mode`, `scale`, and `transform` are applied. A `None`
+/// setting keeps its current value, and when nothing that affects the size changes, the
+/// size niri reports is used as is. `None` when the mode or the scale is unknown.
+pub fn size_after(
+    output: &NiriOutput,
+    mode: Option<ModeSpec>,
+    scale: Option<f64>,
+    transform: Option<Transform>,
+) -> Option<(u32, u32)> {
     let current = output.logical.as_ref();
     let current_mode = output.active_mode();
 
     if let Some(logical) = current
-        && profile_output
-            .mode
-            .is_none_or(|mode| current_mode.is_some_and(|current| current.matches(mode)))
-        && profile_output
-            .scale
-            .is_none_or(|scale| (logical.scale - scale).abs() < SCALE_TOLERANCE)
-        && profile_output
-            .transform
-            .is_none_or(|transform| logical.transform == transform)
+        && mode.is_none_or(|mode| current_mode.is_some_and(|current| current.matches(mode)))
+        && scale.is_none_or(|scale| (logical.scale - scale).abs() < SCALE_TOLERANCE)
+        && transform.is_none_or(|transform| logical.transform == transform)
     {
         return Some((logical.width, logical.height));
     }
 
-    let (width, height) = match profile_output.mode {
+    let (width, height) = match mode {
         Some(mode) => (mode.width, mode.height),
         None => current_mode.map(|mode| (mode.width, mode.height))?,
     };
-    let scale = profile_output
-        .scale
-        .or(current.map(|logical| logical.scale))?;
-    let transform = profile_output
-        .transform
+    let scale = scale.or(current.map(|logical| logical.scale))?;
+    let transform = transform
         .or(current.map(|logical| logical.transform))
         .unwrap_or(Transform::Normal);
     Some(logical_size(
@@ -132,24 +139,6 @@ pub fn configured_size(output: &NiriOutput, profile_output: &ProfileOutput) -> O
         u32::from(height),
         scale,
         transform,
-    ))
-}
-
-/// Logical size the enabled `output` has in `mode`, keeping its current scale and rotation.
-/// `None` while the output is off.
-pub fn size_in_mode(output: &NiriOutput, mode: ModeSpec) -> Option<(u32, u32)> {
-    let logical = output.logical.as_ref()?;
-    if output
-        .active_mode()
-        .is_some_and(|current| current.matches(mode))
-    {
-        return Some((logical.width, logical.height));
-    }
-    Some(logical_size(
-        u32::from(mode.width),
-        u32::from(mode.height),
-        logical.scale,
-        logical.transform,
     ))
 }
 
@@ -506,26 +495,31 @@ mod tests {
     }
 
     #[test]
-    fn size_in_mode_keeps_scale_and_rotation() {
+    fn size_after_keeps_the_settings_left_unset() {
         let mut output = connected_output("Dell Display", 0, 0);
+        let mode = |text: &str| Some(text.parse().unwrap());
 
         assert_eq!(
-            size_in_mode(&output, "3840x2160@60".parse().unwrap()),
+            size_after(&output, mode("3840x2160@60"), None, None),
             Some((2560, 1440))
         );
         assert_eq!(
-            size_in_mode(&output, "1920x1080@60".parse().unwrap()),
+            size_after(&output, mode("1920x1080@60"), None, None),
             Some((1280, 720))
+        );
+        assert_eq!(
+            size_after(&output, None, Some(2.0), Some(Transform::Rotate90)),
+            Some((1080, 1920))
         );
 
         output.logical.as_mut().unwrap().transform = Transform::Rotate90;
         assert_eq!(
-            size_in_mode(&output, "1920x1080@60".parse().unwrap()),
+            size_after(&output, mode("1920x1080@60"), None, None),
             Some((720, 1280))
         );
 
         output.logical = None;
-        assert_eq!(size_in_mode(&output, "1920x1080@60".parse().unwrap()), None);
+        assert_eq!(size_after(&output, mode("1920x1080@60"), None, None), None);
     }
 
     #[test]

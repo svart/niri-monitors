@@ -263,14 +263,18 @@ impl fmt::Display for Transform {
     }
 }
 
-/// Requested runtime position, and optionally mode, for one connected output, by
-/// connector name.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Requested runtime position for one connected output, by connector name, and the mode,
+/// scale, and rotation to change. A `None` setting keeps its current value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ManualOutputPlacement {
     pub output: String,
     pub position: Position,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<ModeSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform: Option<Transform>,
 }
 
 fn default_auto_apply() -> bool {

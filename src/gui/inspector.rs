@@ -1,3 +1,4 @@
+use crate::gui::canvas::LiveOutputSettings;
 use crate::gui::format_scale;
 use crate::gui::theme::{self, Tone};
 use crate::model::{ModeSpec, MonitorMatcher, Position, ProfileOutput, Transform};
@@ -6,6 +7,9 @@ use eframe::egui::{self, RichText};
 use std::cmp::Reverse;
 
 const SCALE_PRESETS: [f64; 5] = [1.0, 1.25, 1.5, 1.75, 2.0];
+const MIN_SCALE: f64 = 0.25;
+const MAX_SCALE: f64 = 4.0;
+const SCALE_STEP: f64 = 0.25;
 const ROTATIONS: [u16; 4] = [0, 90, 180, 270];
 
 /// Edits one profile output. A setting left unset keeps the output's current value when
@@ -249,7 +253,7 @@ fn edit_scale(ui: &mut egui::Ui, scale: &mut Option<f64>, connected: Option<&Nir
         if ui
             .add(
                 egui::DragValue::new(&mut value)
-                    .range(0.25..=4.0)
+                    .range(MIN_SCALE..=MAX_SCALE)
                     .speed(0.01)
                     .max_decimals(3)
                     .suffix("×"),
@@ -345,7 +349,6 @@ fn edit_position(
 pub enum LiveLayoutAction {
     Apply,
     Reset,
-    SetMode(ModeSpec),
 }
 
 pub struct LiveLayoutStatus<'a> {
@@ -353,52 +356,25 @@ pub struct LiveLayoutStatus<'a> {
     pub has_changes: bool,
     pub overlap: Option<&'a str>,
     pub daemon_running: bool,
-    /// The selected output's mode in the draft; `None` while it is off.
-    pub selected_mode: Option<ModeSpec>,
 }
 
-/// Shows the selected live output, its resolution picker, and the controls that apply or
-/// discard the draft layout.
+/// Shows the selected live output with its editable parameters, and the controls that
+/// apply or discard the draft layout. `settings` are the selected output's draft settings,
+/// `None` while it is off; they are edited in place.
 pub fn show_live_layout(
     ui: &mut egui::Ui,
     selected: Option<&NiriOutput>,
+    settings: Option<&mut LiveOutputSettings>,
     status: &LiveLayoutStatus<'_>,
 ) -> Option<LiveLayoutAction> {
     let palette = theme::palette(ui.ctx());
-    let mut action = None;
     match selected {
         Some(output) => {
             ui.label(RichText::new(&output.connector).heading().strong());
             ui.label(theme::weak(ui, output.display_name()));
             ui.add_space(4.0);
-            if let Some(mode) = status.selected_mode {
-                theme::section(ui, "Resolution", |ui| {
-                    if let Some(chosen) = edit_resolution(ui, &output.modes, mode) {
-                        action = Some(LiveLayoutAction::SetMode(chosen));
-                    }
-                });
-            }
-            theme::section(ui, "Now", |ui| match &output.logical {
-                Some(logical) => {
-                    egui::Grid::new("live_output")
-                        .num_columns(2)
-                        .show(ui, |ui| {
-                            if let Some(mode) = output.active_mode() {
-                                ui.label(theme::weak(ui, "Mode"));
-                                ui.label(ModeSpec::from(*mode).to_string());
-                                ui.end_row();
-                            }
-                            ui.label(theme::weak(ui, "Scale"));
-                            ui.label(format_scale(logical.scale));
-                            ui.end_row();
-                            ui.label(theme::weak(ui, "Rotation"));
-                            ui.label(describe_transform(logical.transform));
-                            ui.end_row();
-                            ui.label(theme::weak(ui, "Position"));
-                            ui.label(format!("{}, {}", logical.x, logical.y));
-                            ui.end_row();
-                        });
-                }
+            theme::section(ui, "Parameters", |ui| match settings {
+                Some(settings) => edit_live_settings(ui, &output.modes, settings),
                 None => {
                     ui.label(theme::weak(
                         ui,
@@ -416,6 +392,7 @@ pub fn show_live_layout(
         }
     }
 
+    let mut action = None;
     theme::section(ui, "Layout", |ui| {
         let (tone, text) = if status.overlap.is_some() {
             (Tone::Error, "Monitors overlap")
@@ -443,14 +420,14 @@ pub fn show_live_layout(
                 .on_disabled_hover_text(if status.overlap.is_some() {
                     "Move overlapping monitors apart first"
                 } else {
-                    "Drag a monitor or pick a resolution first"
+                    "Change a parameter or drag a monitor first"
                 });
             if apply.clicked() {
                 action = Some(LiveLayoutAction::Apply);
             }
             if ui
                 .add_enabled(status.has_changes, egui::Button::new("Reset"))
-                .on_hover_text("Discard the changed positions and resolutions")
+                .on_hover_text("Discard all changes")
                 .clicked()
             {
                 action = Some(LiveLayoutAction::Reset);
@@ -474,54 +451,151 @@ pub fn show_live_layout(
     action
 }
 
-/// Lists each resolution in `modes` once. Returns the mode to switch to when another
-/// resolution is picked.
-fn edit_resolution(ui: &mut egui::Ui, modes: &[NiriMode], mode: ModeSpec) -> Option<ModeSpec> {
-    let mut chosen = None;
-    egui::ComboBox::from_id_salt("live_resolution")
+fn edit_live_settings(ui: &mut egui::Ui, modes: &[NiriMode], settings: &mut LiveOutputSettings) {
+    egui::Grid::new("live_settings")
+        .num_columns(2)
+        .spacing([12.0, 8.0])
+        .show(ui, |ui| {
+            ui.label(theme::weak(ui, "Mode"));
+            edit_live_mode(ui, modes, &mut settings.mode);
+            ui.end_row();
+
+            ui.label(theme::weak(ui, "Scale"));
+            edit_live_scale(ui, &mut settings.scale);
+            ui.end_row();
+
+            ui.label(theme::weak(ui, "Rotation"));
+            edit_live_rotation(ui, &mut settings.transform);
+            ui.end_row();
+
+            ui.label(theme::weak(ui, "Position"));
+            ui.horizontal(|ui| {
+                ui.label(theme::weak(ui, "x"));
+                ui.add(egui::DragValue::new(&mut settings.position.x));
+                ui.add_space(4.0);
+                ui.label(theme::weak(ui, "y"));
+                ui.add(egui::DragValue::new(&mut settings.position.y));
+            });
+            ui.end_row();
+        });
+}
+
+fn edit_live_mode(ui: &mut egui::Ui, modes: &[NiriMode], mode: &mut Option<ModeSpec>) {
+    egui::ComboBox::from_id_salt("live_mode")
         .width(ui.available_width())
-        .selected_text(format_resolution(mode.width, mode.height))
+        .selected_text(mode.map_or_else(|| "Unknown".to_owned(), format_mode))
         .show_ui(ui, |ui| {
-            for (width, height) in resolutions(modes) {
-                let selected = (width, height) == (mode.width, mode.height);
-                if ui
-                    .selectable_label(selected, format_resolution(width, height))
-                    .clicked()
-                    && !selected
-                {
-                    chosen = mode_at_resolution(modes, width, height, mode.refresh_millihz);
-                }
+            for available in sorted_modes(modes) {
+                ui.selectable_value(mode, Some(available), format_mode(available));
             }
         });
-    chosen
 }
 
-fn format_resolution(width: u16, height: u16) -> String {
-    format!("{width}×{height}")
+/// `−` and `+` step to the previous or next multiple of `SCALE_STEP`; the value itself can
+/// be dragged or typed.
+fn edit_live_scale(ui: &mut egui::Ui, scale: &mut f64) {
+    ui.horizontal(|ui| {
+        let smaller = step_scale(*scale, false);
+        if ui
+            .add_enabled(smaller < *scale, egui::Button::new("−"))
+            .on_hover_text(format!("Set to {}", format_scale(smaller)))
+            .clicked()
+        {
+            *scale = smaller;
+        }
+        ui.add(
+            egui::DragValue::new(scale)
+                .range(MIN_SCALE..=MAX_SCALE)
+                .clamp_existing_to_range(false)
+                .speed(0.01)
+                .max_decimals(3)
+                .suffix("×"),
+        )
+        .on_hover_text("Drag, or click and type a scale");
+        let larger = step_scale(*scale, true);
+        if ui
+            .add_enabled(larger > *scale, egui::Button::new("+"))
+            .on_hover_text(format!("Set to {}", format_scale(larger)))
+            .clicked()
+        {
+            *scale = larger;
+        }
+    });
 }
 
-/// The distinct resolutions in `modes`, largest first.
-fn resolutions(modes: &[NiriMode]) -> Vec<(u16, u16)> {
-    let mut sizes: Vec<(u16, u16)> = modes.iter().map(|mode| (mode.width, mode.height)).collect();
-    sizes.sort_by_key(|&(width, height)| Reverse((u32::from(width) * u32::from(height), width)));
-    sizes.dedup();
-    sizes
+/// The next multiple of `SCALE_STEP` above or below `scale`, within the scale range.
+fn step_scale(scale: f64, up: bool) -> f64 {
+    // A scale within rounding error of a step counts as on that step.
+    let steps = scale / SCALE_STEP;
+    let next = if up {
+        (steps + 1e-6).floor() + 1.0
+    } else {
+        (steps - 1e-6).ceil() - 1.0
+    };
+    (next * SCALE_STEP).clamp(MIN_SCALE, MAX_SCALE)
 }
 
-/// The mode at `width`x`height` whose refresh rate is closest to `refresh_millihz`, or to
-/// 60 Hz when that is unknown.
-fn mode_at_resolution(
-    modes: &[NiriMode],
-    width: u16,
-    height: u16,
-    refresh_millihz: Option<u32>,
-) -> Option<ModeSpec> {
-    let target = refresh_millihz.unwrap_or(60_000);
-    modes
-        .iter()
-        .filter(|mode| (mode.width, mode.height) == (width, height))
-        .min_by_key(|mode| mode.refresh_millihz.abs_diff(target))
-        .map(|mode| ModeSpec::from(*mode))
+/// `↱` on the left turns the output 90° clockwise, `↰` on the right turns it 90°
+/// counterclockwise. niri counts angles counterclockwise, so `↰` adds 90°. A mirrored
+/// output stays mirrored.
+fn edit_live_rotation(ui: &mut egui::Ui, transform: &mut Transform) {
+    let (degrees, flipped) = rotation(*transform);
+    let counterclockwise = (degrees + 90) % 360;
+    let clockwise = (degrees + 270) % 360;
+    ui.horizontal(|ui| {
+        // Of egui's default fonts, only the monospace one has these arrows.
+        if ui
+            .button(RichText::new("↱").monospace())
+            .on_hover_text(format!("Rotate clockwise, to {clockwise}°"))
+            .clicked()
+        {
+            *transform = transform_from(clockwise, flipped);
+        }
+        // A fixed width keeps the arrows in place while the angle changes.
+        ui.add_sized(
+            [40.0, ui.spacing().interact_size.y],
+            egui::Label::new(format!("{degrees}°")),
+        );
+        if ui
+            .button(RichText::new("↰").monospace())
+            .on_hover_text(format!("Rotate counterclockwise, to {counterclockwise}°"))
+            .clicked()
+        {
+            *transform = transform_from(counterclockwise, flipped);
+        }
+        if flipped {
+            ui.label(theme::weak(ui, "mirrored"));
+        }
+    });
+}
+
+/// For example `2560×1440 @ 59.951 Hz`.
+fn format_mode(mode: ModeSpec) -> String {
+    let size = format!("{}×{}", mode.width, mode.height);
+    match mode.refresh_millihz {
+        Some(millihz) => {
+            let hz = format!("{}.{:03}", millihz / 1000, millihz % 1000);
+            format!(
+                "{size} @ {} Hz",
+                hz.trim_end_matches('0').trim_end_matches('.')
+            )
+        }
+        None => size,
+    }
+}
+
+/// The distinct modes in `modes`, largest resolution first, then fastest refresh rate.
+fn sorted_modes(modes: &[NiriMode]) -> Vec<ModeSpec> {
+    let mut sorted: Vec<ModeSpec> = modes.iter().map(|mode| ModeSpec::from(*mode)).collect();
+    sorted.sort_by_key(|mode| {
+        Reverse((
+            u32::from(mode.width) * u32::from(mode.height),
+            mode.width,
+            mode.refresh_millihz,
+        ))
+    });
+    sorted.dedup();
+    sorted
 }
 
 pub fn matcher_summary(matcher: &MonitorMatcher) -> String {
@@ -542,7 +616,8 @@ fn describe_transform(transform: Transform) -> String {
     }
 }
 
-/// Splits a transform into its clockwise rotation in degrees and whether it is flipped.
+/// Splits a transform into its counterclockwise rotation in degrees, as Wayland and niri
+/// count it, and whether it is flipped.
 fn rotation(transform: Transform) -> (u16, bool) {
     match transform {
         Transform::Normal => (0, false),
@@ -582,43 +657,37 @@ mod tests {
     }
 
     #[test]
-    fn resolutions_are_distinct_and_largest_first() {
+    fn modes_are_distinct_and_largest_first() {
         let modes = [
             mode(1920, 1080, 60_000),
-            mode(3440, 1440, 59_973),
-            mode(1920, 1080, 50_000),
-            mode(2560, 1440, 59_951),
             mode(3440, 1440, 49_987),
+            mode(1920, 1080, 60_000),
+            mode(2560, 1440, 59_951),
+            mode(3440, 1440, 59_973),
         ];
 
+        let sorted: Vec<String> = sorted_modes(&modes).into_iter().map(format_mode).collect();
+
         assert_eq!(
-            resolutions(&modes),
-            vec![(3440, 1440), (2560, 1440), (1920, 1080)]
+            sorted,
+            [
+                "3440×1440 @ 59.973 Hz",
+                "3440×1440 @ 49.987 Hz",
+                "2560×1440 @ 59.951 Hz",
+                "1920×1080 @ 60 Hz",
+            ]
         );
     }
 
     #[test]
-    fn picking_a_resolution_keeps_the_closest_refresh_rate() {
-        let modes = [
-            mode(1920, 1080, 50_000),
-            mode(1920, 1080, 59_940),
-            mode(1920, 1080, 60_000),
-            mode(1920, 1080, 120_000),
-        ];
-
-        assert_eq!(
-            mode_at_resolution(&modes, 1920, 1080, Some(59_973)),
-            Some("1920x1080@60".parse().unwrap())
-        );
-        assert_eq!(
-            mode_at_resolution(&modes, 1920, 1080, Some(143_998)),
-            Some("1920x1080@120".parse().unwrap())
-        );
-        assert_eq!(
-            mode_at_resolution(&modes, 1920, 1080, None),
-            Some("1920x1080@60".parse().unwrap())
-        );
-        assert_eq!(mode_at_resolution(&modes, 1280, 720, Some(60_000)), None);
+    fn scale_steps_go_to_the_next_quarter_within_range() {
+        assert_eq!(step_scale(1.0, true), 1.25);
+        assert_eq!(step_scale(1.0, false), 0.75);
+        assert_eq!(step_scale(1.1, true), 1.25);
+        assert_eq!(step_scale(1.1, false), 1.0);
+        assert_eq!(step_scale(1.250_000_01, true), 1.5);
+        assert_eq!(step_scale(0.25, false), 0.25);
+        assert_eq!(step_scale(4.0, true), 4.0);
     }
 
     fn mode(width: u16, height: u16, refresh_millihz: u32) -> NiriMode {

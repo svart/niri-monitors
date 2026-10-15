@@ -22,7 +22,7 @@ use std::thread::{self, JoinHandle};
 use thiserror::Error;
 use tracing::{error, info};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ControlRequest {
     Status,
@@ -390,7 +390,8 @@ fn error_from_daemon(error: DaemonError) -> ControlResponse {
                 | ManualLayoutError::DuplicateOutput(_)
                 | ManualLayoutError::NotConnected(_)
                 | ManualLayoutError::Disabled(_)
-                | ManualLayoutError::UnavailableMode { .. } => ErrorCode::BadRequest,
+                | ManualLayoutError::UnavailableMode { .. }
+                | ManualLayoutError::InvalidScale { .. } => ErrorCode::BadRequest,
             };
             ControlResponse::error(code, error.to_string())
         }
@@ -418,11 +419,12 @@ mod tests {
     }
 
     #[test]
-    fn manual_layout_placement_mode_is_optional() {
+    fn manual_layout_placement_settings_are_optional() {
         let request: ControlRequest = serde_json::from_str(
             r#"{"type":"apply_manual_layout","placements":[
                 {"output":"DP-1","position":{"x":0,"y":0}},
-                {"output":"DP-2","position":{"x":3440,"y":0},"mode":"2560x1440@59.951"}
+                {"output":"DP-2","position":{"x":3440,"y":0},"mode":"2560x1440@59.951",
+                 "scale":1.25,"transform":"90"}
             ]}"#,
         )
         .unwrap();
@@ -430,10 +432,25 @@ mod tests {
         let ControlRequest::ApplyManualLayout { placements } = request else {
             panic!("expected apply_manual_layout, got {request:?}");
         };
-        assert_eq!(placements[0].mode, None);
         assert_eq!(
-            placements[1].mode,
-            Some("2560x1440@59.951".parse().unwrap())
+            (
+                placements[0].mode,
+                placements[0].scale,
+                placements[0].transform
+            ),
+            (None, None, None)
+        );
+        assert_eq!(
+            (
+                placements[1].mode,
+                placements[1].scale,
+                placements[1].transform
+            ),
+            (
+                Some("2560x1440@59.951".parse().unwrap()),
+                Some(1.25),
+                Some(Transform::Rotate90)
+            )
         );
     }
 
@@ -511,6 +528,8 @@ mod tests {
                     output: "DP-2".to_string(),
                     position: Position { x: 3_440, y: 0 },
                     mode: None,
+                    scale: None,
+                    transform: None,
                 }],
             },
             &mut state,
@@ -537,11 +556,17 @@ mod tests {
             output: output.to_string(),
             position: Position { x: 0, y: 0 },
             mode: None,
+            scale: None,
+            transform: None,
         };
         let mut disabled = output("DP-2");
         disabled.logical = None;
         let unavailable_mode = ManualOutputPlacement {
             mode: Some("640x480@60".parse().unwrap()),
+            ..placement("DP-1")
+        };
+        let zero_scale = ManualOutputPlacement {
+            scale: Some(0.0),
             ..placement("DP-1")
         };
 
@@ -551,6 +576,7 @@ mod tests {
             vec![placement("HDMI-A-1")],
             vec![placement("DP-2")],
             vec![unavailable_mode],
+            vec![zero_scale],
         ] {
             let mut state = DaemonState::new(config("home"));
             let mut client = FakeClient::new(vec![output("DP-1"), disabled.clone()]);
@@ -579,6 +605,8 @@ mod tests {
                     output: "DP-2".to_string(),
                     position: Position { x: 10, y: 10 },
                     mode: None,
+                    scale: None,
+                    transform: None,
                 }],
             },
             &mut state,
@@ -604,11 +632,15 @@ mod tests {
                         output: "DP-1".to_string(),
                         position: Position { x: -100, y: -50 },
                         mode: None,
+                        scale: None,
+                        transform: None,
                     },
                     ManualOutputPlacement {
                         output: "DP-2".to_string(),
                         position: Position { x: 3_340, y: -50 },
                         mode: None,
+                        scale: None,
+                        transform: None,
                     },
                 ],
             },
@@ -692,6 +724,8 @@ mod tests {
                     output: "DP-2".to_string(),
                     position: Position { x: 3_440, y: 0 },
                     mode: None,
+                    scale: None,
+                    transform: None,
                 }],
             },
             &mut state,

@@ -30,7 +30,7 @@ The GUI currently has no CLI flag for an alternate config path.
 
 1. Start niri so `NIRI_SOCKET` is available.
 2. Start `Niri Monitors` from your app launcher, or run `cargo run --bin niri-monitors-gui`.
-3. With no profiles configured, drag monitors on the canvas or change a monitor's resolution in the inspector, then use `Apply` to apply the live layout.
+3. With no profiles configured, drag monitors on the canvas or change a monitor's parameters in the inspector, then use `Apply` to apply the live layout.
 4. Use `+ Save as profile` (or `+ New profile` once profiles exist) to save the current outputs as a reusable profile. The new profile starts in rename mode.
 5. Select a profile in the sidebar.
 6. Drag monitors on the canvas, or edit the selected output in the inspector.
@@ -111,9 +111,16 @@ Keys other than `Ctrl` shortcuts are ignored while a text field has focus.
 
 ## Live Layout
 
-With no profiles configured, the canvas edits a runtime-only draft of the live layout. Drag monitors to move them. Select a monitor and pick a size in the `Resolution` list in the inspector to change its mode. The list shows each resolution once, largest first, and keeps the refresh rate closest to the current one. The canvas shows the new size at once, so you can see and fix overlaps before you apply.
+With no profiles configured, the canvas edits a runtime-only draft of the live layout. Drag monitors to move them, or select a monitor and edit it in the `Parameters` card of the inspector:
 
-`Apply` sends the changed resolutions and positions through the daemon when it is running, which pauses automatic profile loading, or directly through niri IPC otherwise. After the apply, the canvas shows the layout that niri reports. niri can pick a new automatic scale for a new resolution, so the result can differ from the draft. `Reset` discards the changed positions and resolutions. Outputs that are off appear in the sidebar but cannot be placed. Nothing is written to the config file.
+- `Mode`: a list of the modes the monitor offers, the largest resolution first, then the fastest refresh rate.
+- `Scale`: `−` and `+` go to the previous or next multiple of 0.25. You can also drag the value, or click it and type a scale from 0.25 to 4.
+- `Rotation`: `↱` on the left turns the output 90° clockwise. `↰` on the right turns it 90° counterclockwise. niri counts angles counterclockwise, so `↰` adds 90° to the angle. A mirrored output stays mirrored.
+- `Position`: `x` and `y` of the top-left corner.
+
+The canvas shows the changes at once, so you can see and fix overlaps before you apply. `Apply` becomes available when a parameter is different from the value that niri reports. Positions are compared after the layout is moved to start at `0, 0`, so if you move all monitors by the same distance, there is no change to apply.
+
+`Apply` sends the changed parameters through the daemon when it is running, which pauses automatic profile loading, or directly through niri IPC otherwise. After the apply, the canvas shows the layout that niri reports. If you change the mode but not the scale, niri can pick a new automatic scale, so the result can differ from the draft. `Reset` discards all changes. Outputs that are off appear in the sidebar but cannot be placed. Nothing is written to the config file.
 
 ## Daemon Integration
 
