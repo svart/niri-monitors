@@ -1,8 +1,9 @@
 use crate::gui::format_scale;
 use crate::gui::theme::{self, Tone};
 use crate::model::{ModeSpec, MonitorMatcher, Position, ProfileOutput, Transform};
-use crate::niri::output::NiriOutput;
+use crate::niri::output::{NiriMode, NiriOutput};
 use eframe::egui::{self, RichText};
+use std::cmp::Reverse;
 
 const SCALE_PRESETS: [f64; 5] = [1.0, 1.25, 1.5, 1.75, 2.0];
 const ROTATIONS: [u16; 4] = [0, 90, 180, 270];
@@ -344,6 +345,7 @@ fn edit_position(
 pub enum LiveLayoutAction {
     Apply,
     Reset,
+    SetMode(ModeSpec),
 }
 
 pub struct LiveLayoutStatus<'a> {
@@ -351,20 +353,31 @@ pub struct LiveLayoutStatus<'a> {
     pub has_changes: bool,
     pub overlap: Option<&'a str>,
     pub daemon_running: bool,
+    /// The selected output's mode in the draft; `None` while it is off.
+    pub selected_mode: Option<ModeSpec>,
 }
 
-/// Shows the selected live output and the controls that apply or discard the dragged layout.
+/// Shows the selected live output, its resolution picker, and the controls that apply or
+/// discard the draft layout.
 pub fn show_live_layout(
     ui: &mut egui::Ui,
     selected: Option<&NiriOutput>,
     status: &LiveLayoutStatus<'_>,
 ) -> Option<LiveLayoutAction> {
     let palette = theme::palette(ui.ctx());
+    let mut action = None;
     match selected {
         Some(output) => {
             ui.label(RichText::new(&output.connector).heading().strong());
             ui.label(theme::weak(ui, output.display_name()));
             ui.add_space(4.0);
+            if let Some(mode) = status.selected_mode {
+                theme::section(ui, "Resolution", |ui| {
+                    if let Some(chosen) = edit_resolution(ui, &output.modes, mode) {
+                        action = Some(LiveLayoutAction::SetMode(chosen));
+                    }
+                });
+            }
             theme::section(ui, "Now", |ui| match &output.logical {
                 Some(logical) => {
                     egui::Grid::new("live_output")
@@ -403,7 +416,6 @@ pub fn show_live_layout(
         }
     }
 
-    let mut action = None;
     theme::section(ui, "Layout", |ui| {
         let (tone, text) = if status.overlap.is_some() {
             (Tone::Error, "Monitors overlap")
@@ -431,14 +443,14 @@ pub fn show_live_layout(
                 .on_disabled_hover_text(if status.overlap.is_some() {
                     "Move overlapping monitors apart first"
                 } else {
-                    "Drag a monitor to change the layout first"
+                    "Drag a monitor or pick a resolution first"
                 });
             if apply.clicked() {
                 action = Some(LiveLayoutAction::Apply);
             }
             if ui
                 .add_enabled(status.has_changes, egui::Button::new("Reset"))
-                .on_hover_text("Discard the dragged positions")
+                .on_hover_text("Discard the changed positions and resolutions")
                 .clicked()
             {
                 action = Some(LiveLayoutAction::Reset);
@@ -460,6 +472,56 @@ pub fn show_live_layout(
          Shift+arrow by 10 px.",
     ));
     action
+}
+
+/// Lists each resolution in `modes` once. Returns the mode to switch to when another
+/// resolution is picked.
+fn edit_resolution(ui: &mut egui::Ui, modes: &[NiriMode], mode: ModeSpec) -> Option<ModeSpec> {
+    let mut chosen = None;
+    egui::ComboBox::from_id_salt("live_resolution")
+        .width(ui.available_width())
+        .selected_text(format_resolution(mode.width, mode.height))
+        .show_ui(ui, |ui| {
+            for (width, height) in resolutions(modes) {
+                let selected = (width, height) == (mode.width, mode.height);
+                if ui
+                    .selectable_label(selected, format_resolution(width, height))
+                    .clicked()
+                    && !selected
+                {
+                    chosen = mode_at_resolution(modes, width, height, mode.refresh_millihz);
+                }
+            }
+        });
+    chosen
+}
+
+fn format_resolution(width: u16, height: u16) -> String {
+    format!("{width}×{height}")
+}
+
+/// The distinct resolutions in `modes`, largest first.
+fn resolutions(modes: &[NiriMode]) -> Vec<(u16, u16)> {
+    let mut sizes: Vec<(u16, u16)> = modes.iter().map(|mode| (mode.width, mode.height)).collect();
+    sizes.sort_by_key(|&(width, height)| Reverse((u32::from(width) * u32::from(height), width)));
+    sizes.dedup();
+    sizes
+}
+
+/// The mode at `width`x`height` whose refresh rate is closest to `refresh_millihz`, or to
+/// 60 Hz when that is unknown.
+fn mode_at_resolution(
+    modes: &[NiriMode],
+    width: u16,
+    height: u16,
+    refresh_millihz: Option<u32>,
+) -> Option<ModeSpec> {
+    let target = refresh_millihz.unwrap_or(60_000);
+    modes
+        .iter()
+        .filter(|mode| (mode.width, mode.height) == (width, height))
+        .min_by_key(|mode| mode.refresh_millihz.abs_diff(target))
+        .map(|mode| ModeSpec::from(*mode))
 }
 
 pub fn matcher_summary(matcher: &MonitorMatcher) -> String {
@@ -516,6 +578,55 @@ mod tests {
         for transform in Transform::ALL {
             let (degrees, flipped) = rotation(transform);
             assert_eq!(transform_from(degrees, flipped), transform);
+        }
+    }
+
+    #[test]
+    fn resolutions_are_distinct_and_largest_first() {
+        let modes = [
+            mode(1920, 1080, 60_000),
+            mode(3440, 1440, 59_973),
+            mode(1920, 1080, 50_000),
+            mode(2560, 1440, 59_951),
+            mode(3440, 1440, 49_987),
+        ];
+
+        assert_eq!(
+            resolutions(&modes),
+            vec![(3440, 1440), (2560, 1440), (1920, 1080)]
+        );
+    }
+
+    #[test]
+    fn picking_a_resolution_keeps_the_closest_refresh_rate() {
+        let modes = [
+            mode(1920, 1080, 50_000),
+            mode(1920, 1080, 59_940),
+            mode(1920, 1080, 60_000),
+            mode(1920, 1080, 120_000),
+        ];
+
+        assert_eq!(
+            mode_at_resolution(&modes, 1920, 1080, Some(59_973)),
+            Some("1920x1080@60".parse().unwrap())
+        );
+        assert_eq!(
+            mode_at_resolution(&modes, 1920, 1080, Some(143_998)),
+            Some("1920x1080@120".parse().unwrap())
+        );
+        assert_eq!(
+            mode_at_resolution(&modes, 1920, 1080, None),
+            Some("1920x1080@60".parse().unwrap())
+        );
+        assert_eq!(mode_at_resolution(&modes, 1280, 720, Some(60_000)), None);
+    }
+
+    fn mode(width: u16, height: u16, refresh_millihz: u32) -> NiriMode {
+        NiriMode {
+            width,
+            height,
+            refresh_millihz,
+            is_preferred: false,
         }
     }
 

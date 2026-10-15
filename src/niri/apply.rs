@@ -4,7 +4,7 @@ use crate::niri::ipc::{NiriClient, NiriError, OutputAction};
 use crate::niri::output::NiriOutput;
 use crate::placement::{
     OutputRect, SCALE_TOLERANCE, configured_size, first_overlap_message,
-    normalize_output_rect_positions, placed_output_rect,
+    normalize_output_rect_positions, placed_output_rect, size_in_mode,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -76,6 +76,8 @@ pub enum ManualLayoutError {
     NotConnected(String),
     #[error("manual layout output is disabled: {0}")]
     Disabled(String),
+    #[error("manual layout output {output} does not offer mode {mode}")]
+    UnavailableMode { output: String, mode: ModeSpec },
     #[error("manual layout has overlapping outputs: {0}")]
     Overlap(String),
 }
@@ -313,10 +315,11 @@ pub fn build_apply_plan(
     })
 }
 
-/// Builds the position actions that move enabled outputs to `placements`.
+/// Builds the mode and position actions that move enabled outputs to `placements`.
 ///
-/// The resulting layout is normalized to start at 0,0 like a profile layout, so outputs
-/// without a placement can move too. Outputs already in place get no action.
+/// Mode changes come first and keep each output's scale and rotation. The resulting layout
+/// is normalized to start at 0,0 like a profile layout, so outputs without a placement can
+/// move too. Outputs already in place, or already in the requested mode, get no action.
 pub fn build_manual_layout_plan(
     outputs: &[NiriOutput],
     placements: &[ManualOutputPlacement],
@@ -327,6 +330,7 @@ pub fn build_manual_layout_plan(
 
     let mut layout: Vec<Option<Placement>> = outputs.iter().map(Placement::current).collect();
     let mut placed = HashSet::new();
+    let mut actions = Vec::new();
     for placement in placements {
         let name = &placement.output;
         if !placed.insert(name) {
@@ -340,11 +344,36 @@ pub fn build_manual_layout_plan(
             .as_mut()
             .ok_or_else(|| ManualLayoutError::Disabled(name.clone()))?;
         current.position = Some(placement.position);
+
+        let output = &outputs[index];
+        if let Some(mode) = placement.mode {
+            if !output.modes.iter().any(|available| available.matches(mode)) {
+                return Err(ManualLayoutError::UnavailableMode {
+                    output: name.clone(),
+                    mode,
+                });
+            }
+            if !output
+                .active_mode()
+                .is_some_and(|active| active.matches(mode))
+            {
+                actions.push(planned(
+                    name.clone(),
+                    OutputAction::Mode {
+                        width: mode.width,
+                        height: mode.height,
+                        refresh_millihz: mode.refresh_millihz,
+                    },
+                ));
+                current.size = size_in_mode(output, mode);
+            }
+        }
     }
+    actions.extend(plan_positions(outputs, &layout).map_err(ManualLayoutError::Overlap)?);
 
     Ok(ApplyPlan {
         profile_id: "manual-layout".to_owned(),
-        actions: plan_positions(outputs, &layout).map_err(ManualLayoutError::Overlap)?,
+        actions,
         warnings: Vec::new(),
     })
 }
@@ -841,6 +870,69 @@ mod tests {
         let error = build_apply_plan(&config, &profile, &outputs).expect_err("plan should fail");
 
         assert!(matches!(error, ApplyPlanError::UnavailableMode { .. }));
+    }
+
+    #[test]
+    fn manual_layout_changes_modes_before_moving_outputs() {
+        let mut dp1 = output("DP-1", true);
+        dp1.modes.push(NiriMode {
+            width: 2560,
+            height: 1440,
+            refresh_millihz: 59951,
+            is_preferred: false,
+        });
+        let outputs = vec![dp1, output("HDMI-A-1", true)];
+
+        // HDMI-A-1 overlaps DP-1 at its current width, but not at the new one.
+        let plan = build_manual_layout_plan(
+            &outputs,
+            &[
+                ManualOutputPlacement {
+                    output: "DP-1".to_string(),
+                    position: Position { x: 0, y: 0 },
+                    mode: Some("2560x1440@59.951".parse().unwrap()),
+                },
+                ManualOutputPlacement {
+                    output: "HDMI-A-1".to_string(),
+                    position: Position { x: 2_560, y: 0 },
+                    mode: Some("3440x1440@59.973".parse().unwrap()),
+                },
+            ],
+        )
+        .expect("plan should build");
+
+        assert_eq!(
+            plan.actions,
+            vec![
+                planned(
+                    "DP-1".to_string(),
+                    OutputAction::Mode {
+                        width: 2560,
+                        height: 1440,
+                        refresh_millihz: Some(59951),
+                    },
+                ),
+                planned(
+                    "HDMI-A-1".to_string(),
+                    OutputAction::Position(Position { x: 2_560, y: 0 }),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn manual_layout_rejects_modes_the_output_does_not_offer() {
+        let error = build_manual_layout_plan(
+            &[output("DP-1", true)],
+            &[ManualOutputPlacement {
+                output: "DP-1".to_string(),
+                position: Position { x: 0, y: 0 },
+                mode: Some("1920x1080@60".parse().unwrap()),
+            }],
+        )
+        .expect_err("plan should fail");
+
+        assert!(matches!(error, ManualLayoutError::UnavailableMode { .. }));
     }
 
     #[test]

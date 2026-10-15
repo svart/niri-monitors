@@ -30,7 +30,7 @@ The GUI currently has no CLI flag for an alternate config path.
 
 1. Start niri so `NIRI_SOCKET` is available.
 2. Start `Niri Monitors` from your app launcher, or run `cargo run --bin niri-monitors-gui`.
-3. With no profiles configured, drag monitors on the canvas and use `Apply` to apply the live layout.
+3. With no profiles configured, drag monitors on the canvas or change a monitor's resolution in the inspector, then use `Apply` to apply the live layout.
 4. Use `+ Save as profile` (or `+ New profile` once profiles exist) to save the current outputs as a reusable profile. The new profile starts in rename mode.
 5. Select a profile in the sidebar.
 6. Drag monitors on the canvas, or edit the selected output in the inspector.
@@ -111,7 +111,9 @@ Keys other than `Ctrl` shortcuts are ignored while a text field has focus.
 
 ## Live Layout
 
-With no profiles configured, the canvas edits a runtime-only draft of the live layout. `Apply` sends changed positions through the daemon when it is running, which pauses automatic profile loading, or directly through niri IPC otherwise. `Reset` discards the dragged positions. Outputs that are off appear in the sidebar but cannot be placed.
+With no profiles configured, the canvas edits a runtime-only draft of the live layout. Drag monitors to move them. Select a monitor and pick a size in the `Resolution` list in the inspector to change its mode. The list shows each resolution once, largest first, and keeps the refresh rate closest to the current one. The canvas shows the new size at once, so you can see and fix overlaps before you apply.
+
+`Apply` sends the changed resolutions and positions through the daemon when it is running, which pauses automatic profile loading, or directly through niri IPC otherwise. After the apply, the canvas shows the layout that niri reports. niri can pick a new automatic scale for a new resolution, so the result can differ from the draft. `Reset` discards the changed positions and resolutions. Outputs that are off appear in the sidebar but cannot be placed. Nothing is written to the config file.
 
 ## Daemon Integration
 

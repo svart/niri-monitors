@@ -1,5 +1,5 @@
 use crate::matching::matcher_matches_output;
-use crate::model::{Position, Profile, ProfileOutput, Transform};
+use crate::model::{ModeSpec, Position, Profile, ProfileOutput, Transform};
 use crate::niri::output::NiriOutput;
 
 const FALLBACK_WIDTH: u32 = 1920;
@@ -132,6 +132,24 @@ pub fn configured_size(output: &NiriOutput, profile_output: &ProfileOutput) -> O
         u32::from(height),
         scale,
         transform,
+    ))
+}
+
+/// Logical size the enabled `output` has in `mode`, keeping its current scale and rotation.
+/// `None` while the output is off.
+pub fn size_in_mode(output: &NiriOutput, mode: ModeSpec) -> Option<(u32, u32)> {
+    let logical = output.logical.as_ref()?;
+    if output
+        .active_mode()
+        .is_some_and(|current| current.matches(mode))
+    {
+        return Some((logical.width, logical.height));
+    }
+    Some(logical_size(
+        u32::from(mode.width),
+        u32::from(mode.height),
+        logical.scale,
+        logical.transform,
     ))
 }
 
@@ -485,6 +503,29 @@ mod tests {
         assert_eq!(rects[0].width, 2000);
         assert_eq!(rects[0].height, 1333);
         assert!(!rects[0].connected);
+    }
+
+    #[test]
+    fn size_in_mode_keeps_scale_and_rotation() {
+        let mut output = connected_output("Dell Display", 0, 0);
+
+        assert_eq!(
+            size_in_mode(&output, "3840x2160@60".parse().unwrap()),
+            Some((2560, 1440))
+        );
+        assert_eq!(
+            size_in_mode(&output, "1920x1080@60".parse().unwrap()),
+            Some((1280, 720))
+        );
+
+        output.logical.as_mut().unwrap().transform = Transform::Rotate90;
+        assert_eq!(
+            size_in_mode(&output, "1920x1080@60".parse().unwrap()),
+            Some((720, 1280))
+        );
+
+        output.logical = None;
+        assert_eq!(size_in_mode(&output, "1920x1080@60".parse().unwrap()), None);
     }
 
     #[test]

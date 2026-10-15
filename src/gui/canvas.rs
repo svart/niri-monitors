@@ -1,12 +1,12 @@
 use crate::gui::format_scale;
 use crate::gui::theme::{self, Palette};
 use crate::matching::matcher_matches_output;
-use crate::model::{Position, Profile};
+use crate::model::{ManualOutputPlacement, ModeSpec, Position, Profile};
 use crate::niri::output::NiriOutput;
 use crate::placement::{
     OutputRect, SnapAxis, SnapLine, derive_connected_output_rects, derive_output_rects,
     first_overlap_message as placement_first_overlap_message, normalize_output_rect_positions,
-    overlapping_output_pairs, snap_position,
+    overlapping_output_pairs, size_in_mode, snap_position,
 };
 use eframe::egui::{
     self, Align2, CornerRadius, FontId, Pos2, Rect, Sense, Shadow, Stroke, StrokeKind, Vec2,
@@ -40,11 +40,19 @@ pub struct ViewBox {
     pub height: f32,
 }
 
+/// Runtime-only edits to the live layout. Entries follow the order of
+/// `derive_connected_output_rects`, so they cover enabled outputs only.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ManualLayoutDraft {
     output_keys: Vec<String>,
-    current_positions: Vec<Position>,
-    draft_positions: Vec<Position>,
+    current: Vec<DraftOutput>,
+    draft: Vec<DraftOutput>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DraftOutput {
+    position: Position,
+    mode: Option<ModeSpec>,
 }
 
 impl ManualLayoutDraft {
@@ -55,59 +63,81 @@ impl ManualLayoutDraft {
             .filter_map(|rect| outputs.get(rect.output_index))
             .map(|output| output.connector.clone())
             .collect::<Vec<_>>();
-        let current_positions = rects
+        let current = rects
             .iter()
-            .map(|rect| Position {
-                x: rect.x,
-                y: rect.y,
+            .map(|rect| DraftOutput {
+                position: Position {
+                    x: rect.x,
+                    y: rect.y,
+                },
+                mode: outputs
+                    .get(rect.output_index)
+                    .and_then(NiriOutput::active_mode)
+                    .map(|mode| ModeSpec::from(*mode)),
             })
             .collect::<Vec<_>>();
 
-        if self.output_keys != output_keys
-            || !self.has_changes()
-            || self.draft_positions == current_positions
-        {
+        if self.output_keys != output_keys || !self.has_changes() || self.draft == current {
             self.output_keys = output_keys;
-            self.current_positions = current_positions.clone();
-            self.draft_positions = current_positions;
+            self.current = current.clone();
+            self.draft = current;
         } else {
-            self.current_positions = current_positions;
+            self.current = current;
         }
     }
 
     pub fn has_changes(&self) -> bool {
-        self.current_positions != self.draft_positions
+        self.current != self.draft
     }
 
     pub fn reset(&mut self) {
-        self.draft_positions = self.current_positions.clone();
+        self.draft = self.current.clone();
     }
 
-    pub fn normalized_changed_positions(&self, outputs: &[NiriOutput]) -> Vec<(String, Position)> {
+    /// Outputs whose normalized draft position or draft mode differs from niri's. The mode
+    /// is set only when it changes.
+    pub fn changed_placements(&self, outputs: &[NiriOutput]) -> Vec<ManualOutputPlacement> {
         let mut rects = self.draft_rects(outputs);
         normalize_output_rect_positions(&mut rects);
 
         rects
             .iter()
-            .filter_map(|rect| {
+            .zip(&self.draft)
+            .filter_map(|(rect, draft)| {
                 let output = outputs.get(rect.output_index)?;
                 let current = output.logical.as_ref()?;
-                let normalized = Position {
+                let position = Position {
                     x: rect.x,
                     y: rect.y,
                 };
-                (normalized.x != current.x || normalized.y != current.y)
-                    .then_some((output.connector.clone(), normalized))
+                let mode = draft.mode.filter(|mode| {
+                    !output
+                        .active_mode()
+                        .is_some_and(|active| active.matches(*mode))
+                });
+                (position.x != current.x || position.y != current.y || mode.is_some()).then(|| {
+                    ManualOutputPlacement {
+                        output: output.connector.clone(),
+                        position,
+                        mode,
+                    }
+                })
             })
             .collect()
     }
 
     pub fn draft_rects(&self, outputs: &[NiriOutput]) -> Vec<OutputRect> {
         let mut rects = derive_connected_output_rects(outputs);
-        for (draft_index, rect) in rects.iter_mut().enumerate() {
-            if let Some(position) = self.draft_positions.get(draft_index) {
-                rect.x = position.x;
-                rect.y = position.y;
+        for (rect, draft) in rects.iter_mut().zip(&self.draft) {
+            rect.x = draft.position.x;
+            rect.y = draft.position.y;
+            if let Some((width, height)) = draft
+                .mode
+                .zip(outputs.get(rect.output_index))
+                .and_then(|(mode, output)| size_in_mode(output, mode))
+            {
+                rect.width = width;
+                rect.height = height;
             }
         }
         rects
@@ -117,6 +147,29 @@ impl ManualLayoutDraft {
         placement_first_overlap_message(&self.draft_rects(outputs))
     }
 
+    /// The draft mode of `output_index`; `None` while it is off.
+    pub fn mode(&self, outputs: &[NiriOutput], output_index: usize) -> Option<ModeSpec> {
+        self.draft
+            .get(draft_index(outputs, output_index)?)
+            .and_then(|draft| draft.mode)
+    }
+
+    /// Sets the draft mode of `output_index`. Returns whether it changed.
+    pub fn set_mode(
+        &mut self,
+        outputs: &[NiriOutput],
+        output_index: usize,
+        mode: ModeSpec,
+    ) -> bool {
+        match draft_index(outputs, output_index).and_then(|index| self.draft.get_mut(index)) {
+            Some(draft) if draft.mode != Some(mode) => {
+                draft.mode = Some(mode);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Sets the draft position of `output_index`. Returns whether it changed.
     pub fn move_output(
         &mut self,
@@ -124,15 +177,9 @@ impl ManualLayoutDraft {
         output_index: usize,
         position: Position,
     ) -> bool {
-        let Some(draft_index) = derive_connected_output_rects(outputs)
-            .iter()
-            .position(|rect| rect.output_index == output_index)
-        else {
-            return false;
-        };
-        match self.draft_positions.get_mut(draft_index) {
-            Some(draft) if *draft != position => {
-                *draft = position;
+        match draft_index(outputs, output_index).and_then(|index| self.draft.get_mut(index)) {
+            Some(draft) if draft.position != position => {
+                draft.position = position;
                 true
             }
             _ => false,
@@ -162,6 +209,13 @@ impl ManualLayoutDraft {
             },
         )
     }
+}
+
+/// Index in the draft of the enabled output `output_index`.
+fn draft_index(outputs: &[NiriOutput], output_index: usize) -> Option<usize> {
+    derive_connected_output_rects(outputs)
+        .iter()
+        .position(|rect| rect.output_index == output_index)
 }
 
 /// Moves a profile output by `(dx, dy)` from where the canvas draws it.
@@ -245,7 +299,7 @@ pub fn show_editable_live_monitor_canvas(
         state.selected_output = None;
     }
 
-    let tiles = live_tiles(draft.draft_rects(outputs), outputs);
+    let tiles = live_tiles(draft, outputs);
     if tiles.is_empty() {
         show_empty_canvas(ui, "No monitors to arrange", empty_message);
         return false;
@@ -294,8 +348,9 @@ fn profile_tiles(profile: &Profile, connected_outputs: &[NiriOutput]) -> Vec<Til
         .collect()
 }
 
-fn live_tiles(rects: Vec<OutputRect>, outputs: &[NiriOutput]) -> Vec<Tile> {
-    rects
+fn live_tiles(draft: &ManualLayoutDraft, outputs: &[NiriOutput]) -> Vec<Tile> {
+    draft
+        .draft_rects(outputs)
         .into_iter()
         .filter_map(|rect| {
             let output = outputs.get(rect.output_index)?;
@@ -306,7 +361,9 @@ fn live_tiles(rects: Vec<OutputRect>, outputs: &[NiriOutput]) -> Vec<Tile> {
                     rect.width,
                     rect.height,
                     output.logical.as_ref().map(|logical| logical.scale),
-                    output.active_mode().map(|mode| mode.refresh_millihz),
+                    draft
+                        .mode(outputs, rect.output_index)
+                        .and_then(|mode| mode.refresh_millihz),
                 ),
                 off: false,
                 rect,
@@ -789,7 +846,7 @@ mod tests {
         draft.sync_from_outputs(&[output("DP-1", 0, 0)]);
         assert!(!draft.has_changes());
 
-        draft.draft_positions[0] = Position { x: 120, y: 80 };
+        draft.draft[0].position = Position { x: 120, y: 80 };
 
         assert!(draft.has_changes());
         let rects = draft.draft_rects(&[output("DP-1", 0, 0)]);
@@ -800,7 +857,7 @@ mod tests {
     fn manual_layout_draft_resets_when_live_position_matches_draft() {
         let mut draft = ManualLayoutDraft::default();
         draft.sync_from_outputs(&[output("DP-1", 0, 0)]);
-        draft.draft_positions[0] = Position { x: 120, y: 80 };
+        draft.draft[0].position = Position { x: 120, y: 80 };
 
         draft.sync_from_outputs(&[output("DP-1", 120, 80)]);
 
@@ -811,7 +868,7 @@ mod tests {
     fn manual_layout_draft_reports_overlap_message() {
         let mut draft = ManualLayoutDraft::default();
         draft.sync_from_outputs(&[output("DP-1", 0, 0), output("DP-2", 4_000, 0)]);
-        draft.draft_positions[1] = Position { x: 10, y: 10 };
+        draft.draft[1].position = Position { x: 10, y: 10 };
 
         assert_eq!(
             draft.first_overlap_message(&[output("DP-1", 0, 0), output("DP-2", 4_000, 0)]),
@@ -824,13 +881,72 @@ mod tests {
         let mut draft = ManualLayoutDraft::default();
         let outputs = [output("DP-1", 0, 0), output("DP-2", 4_000, 0)];
         draft.sync_from_outputs(&outputs);
-        draft.draft_positions[0] = Position { x: -100, y: -50 };
-        draft.draft_positions[1] = Position { x: 3_340, y: -50 };
+        draft.draft[0].position = Position { x: -100, y: -50 };
+        draft.draft[1].position = Position { x: 3_340, y: -50 };
 
         assert_eq!(
-            draft.normalized_changed_positions(&outputs),
-            vec![("DP-2".to_string(), Position { x: 3_440, y: 0 })]
+            draft.changed_placements(&outputs),
+            vec![ManualOutputPlacement {
+                output: "DP-2".to_string(),
+                position: Position { x: 3_440, y: 0 },
+                mode: None,
+            }]
         );
+    }
+
+    #[test]
+    fn changing_the_draft_mode_resizes_the_output_and_is_applied() {
+        let outputs = [two_mode_output(0), output("DP-2", 3_440, 0)];
+        let mut draft = ManualLayoutDraft::default();
+        draft.sync_from_outputs(&outputs);
+        let smaller = "2560x1440@59.951".parse().unwrap();
+
+        assert!(draft.set_mode(&outputs, 0, smaller));
+        assert!(!draft.set_mode(&outputs, 0, smaller));
+
+        assert_eq!(draft.mode(&outputs, 0), Some(smaller));
+        assert_eq!(draft.draft_rects(&outputs)[0].width, 2560);
+        assert_eq!(
+            draft.changed_placements(&outputs),
+            vec![ManualOutputPlacement {
+                output: "DP-1".to_string(),
+                position: Position { x: 0, y: 0 },
+                mode: Some(smaller),
+            }]
+        );
+
+        draft.reset();
+        assert!(draft.changed_placements(&outputs).is_empty());
+        assert_eq!(
+            draft.mode(&outputs, 0),
+            Some("3440x1440@59.973".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn manual_layout_draft_resets_when_live_mode_matches_draft() {
+        let before = [two_mode_output(0)];
+        let mut draft = ManualLayoutDraft::default();
+        draft.sync_from_outputs(&before);
+        draft.set_mode(&before, 0, "2560x1440@59.951".parse().unwrap());
+
+        let mut after = two_mode_output(0);
+        after.current_mode = Some(1);
+        after.logical.as_mut().unwrap().width = 2560;
+        draft.sync_from_outputs(&[after]);
+
+        assert!(!draft.has_changes());
+    }
+
+    fn two_mode_output(x: i32) -> NiriOutput {
+        let mut output = output("DP-1", x, 0);
+        output.modes.push(NiriMode {
+            width: 2560,
+            height: 1440,
+            refresh_millihz: 59951,
+            is_preferred: false,
+        });
+        output
     }
 
     fn output(connector: &str, x: i32, y: i32) -> NiriOutput {

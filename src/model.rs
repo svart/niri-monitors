@@ -263,11 +263,14 @@ impl fmt::Display for Transform {
     }
 }
 
-/// Requested runtime position for one connected output, by connector name.
+/// Requested runtime position, and optionally mode, for one connected output, by
+/// connector name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManualOutputPlacement {
     pub output: String,
     pub position: Position,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ModeSpec>,
 }
 
 fn default_auto_apply() -> bool {

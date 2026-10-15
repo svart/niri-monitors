@@ -68,7 +68,7 @@ The GUI currently uses the default config path only. The daemon supports `--conf
 
 Daemon and GUI startup tolerate a missing or empty config by using an empty in-memory `version = 1` config. Do not reintroduce startup failure for a missing config unless the behavior is intentionally changed with tests and docs.
 
-Manual layout behavior remains runtime-only in the daemon/control protocol. The GUI canvas edits the selected saved profile layout draft when a profile exists; with no profiles configured, it edits and applies a live manual-layout draft without changing saved TOML.
+Manual layout behavior remains runtime-only in the daemon/control protocol. The GUI canvas edits the selected saved profile layout draft when a profile exists; with no profiles configured, it edits and applies a live manual-layout draft (positions and modes, through `ManualOutputPlacement.mode`) without changing saved TOML.
 
 Profile selection is deterministic: manual profile if enabled and matching, otherwise enabled matching profile by priority, specificity, then config order.
 

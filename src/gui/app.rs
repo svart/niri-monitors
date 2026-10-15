@@ -18,7 +18,8 @@ use crate::gui::theme;
 use crate::gui::toast::Toasts;
 use crate::matching::matcher_matches_output;
 use crate::model::{Config, ManualOutputPlacement, Profile};
-use crate::niri::ipc::{NiriClient, OutputAction, SocketNiriClient};
+use crate::niri::apply::{build_manual_layout_plan, execute_apply_plan};
+use crate::niri::ipc::{NiriClient, SocketNiriClient};
 use crate::niri::output::NiriOutput;
 use crate::placement::{derive_output_rects, first_overlap_message};
 use eframe::egui::{self, Margin, RichText};
@@ -217,12 +218,7 @@ impl GuiApp {
             return;
         }
 
-        let placements = self
-            .manual_layout
-            .normalized_changed_positions(&connected_outputs)
-            .into_iter()
-            .map(|(output, position)| ManualOutputPlacement { output, position })
-            .collect::<Vec<_>>();
+        let placements = self.manual_layout.changed_placements(&connected_outputs);
         if placements.is_empty() {
             self.toasts
                 .success("The layout already matches the monitors.");
@@ -242,7 +238,7 @@ impl GuiApp {
         {
             Ok(status) => {
                 self.live_outputs = LiveOutputsState::Available(status.outputs.clone());
-                self.manual_layout.sync_from_outputs(&status.outputs);
+                self.show_applied_layout(&status.outputs);
                 self.daemon = DaemonConnectionState::Running(status);
                 self.toasts
                     .success("Layout applied. Automatic profiles are paused.");
@@ -254,25 +250,28 @@ impl GuiApp {
     fn apply_manual_layout_direct(&mut self, placements: Vec<ManualOutputPlacement>) {
         let result = (|| -> Result<Vec<NiriOutput>, String> {
             let mut client = SocketNiriClient::from_env().map_err(|error| error.to_string())?;
-            for placement in placements {
-                client
-                    .apply_output_action(
-                        &placement.output,
-                        OutputAction::Position(placement.position),
-                    )
-                    .map_err(|error| error.to_string())?;
-            }
+            let outputs = client.outputs().map_err(|error| error.to_string())?;
+            let plan = build_manual_layout_plan(&outputs, &placements)
+                .map_err(|error| error.to_string())?;
+            execute_apply_plan(&mut client, &plan).map_err(|error| error.to_string())?;
             client.outputs().map_err(|error| error.to_string())
         })();
 
         match result {
             Ok(outputs) => {
-                self.manual_layout.sync_from_outputs(&outputs);
+                self.show_applied_layout(&outputs);
                 self.live_outputs = LiveOutputsState::Available(outputs);
                 self.toasts.success("Layout applied through niri.");
             }
             Err(error) => self.toasts.error(format!("Applying failed: {error}")),
         }
+    }
+
+    /// Replaces the draft with what niri reports after an apply. niri may pick a new
+    /// automatic scale for a new mode, so the result can differ from the draft.
+    fn show_applied_layout(&mut self, outputs: &[NiriOutput]) {
+        self.manual_layout.sync_from_outputs(outputs);
+        self.manual_layout.reset();
     }
 
     fn selected_profile_index(&self) -> Option<usize> {
@@ -620,23 +619,25 @@ impl GuiApp {
     fn show_live_inspector(&mut self, ui: &mut egui::Ui) {
         let outputs = self.connected_outputs().to_vec();
         let overlap = self.manual_layout.first_overlap_message(&outputs);
+        let selected_index = self.runtime_canvas.selected_output;
         let status = LiveLayoutStatus {
             has_outputs: !outputs.is_empty(),
-            has_changes: !self
-                .manual_layout
-                .normalized_changed_positions(&outputs)
-                .is_empty(),
+            has_changes: !self.manual_layout.changed_placements(&outputs).is_empty(),
             overlap: overlap.as_deref(),
             daemon_running: self.daemon_running(),
+            selected_mode: selected_index
+                .and_then(|index| self.manual_layout.mode(&outputs, index)),
         };
-        let selected = self
-            .runtime_canvas
-            .selected_output
-            .and_then(|index| outputs.get(index));
+        let selected = selected_index.and_then(|index| outputs.get(index));
 
         match show_live_layout(ui, selected, &status) {
             Some(LiveLayoutAction::Apply) => self.apply_manual_layout(),
             Some(LiveLayoutAction::Reset) => self.manual_layout.reset(),
+            Some(LiveLayoutAction::SetMode(mode)) => {
+                if let Some(index) = selected_index {
+                    self.manual_layout.set_mode(&outputs, index, mode);
+                }
+            }
             None => {}
         }
     }

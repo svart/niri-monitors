@@ -389,7 +389,8 @@ fn error_from_daemon(error: DaemonError) -> ControlResponse {
                 ManualLayoutError::Empty
                 | ManualLayoutError::DuplicateOutput(_)
                 | ManualLayoutError::NotConnected(_)
-                | ManualLayoutError::Disabled(_) => ErrorCode::BadRequest,
+                | ManualLayoutError::Disabled(_)
+                | ManualLayoutError::UnavailableMode { .. } => ErrorCode::BadRequest,
             };
             ControlResponse::error(code, error.to_string())
         }
@@ -414,6 +415,26 @@ mod tests {
         let request: ControlRequest = serde_json::from_str(r#"{"type":"status"}"#).unwrap();
 
         assert_eq!(request, ControlRequest::Status);
+    }
+
+    #[test]
+    fn manual_layout_placement_mode_is_optional() {
+        let request: ControlRequest = serde_json::from_str(
+            r#"{"type":"apply_manual_layout","placements":[
+                {"output":"DP-1","position":{"x":0,"y":0}},
+                {"output":"DP-2","position":{"x":3440,"y":0},"mode":"2560x1440@59.951"}
+            ]}"#,
+        )
+        .unwrap();
+
+        let ControlRequest::ApplyManualLayout { placements } = request else {
+            panic!("expected apply_manual_layout, got {request:?}");
+        };
+        assert_eq!(placements[0].mode, None);
+        assert_eq!(
+            placements[1].mode,
+            Some("2560x1440@59.951".parse().unwrap())
+        );
     }
 
     #[test]
@@ -489,6 +510,7 @@ mod tests {
                 placements: vec![ManualOutputPlacement {
                     output: "DP-2".to_string(),
                     position: Position { x: 3_440, y: 0 },
+                    mode: None,
                 }],
             },
             &mut state,
@@ -514,15 +536,21 @@ mod tests {
         let placement = |output: &str| ManualOutputPlacement {
             output: output.to_string(),
             position: Position { x: 0, y: 0 },
+            mode: None,
         };
         let mut disabled = output("DP-2");
         disabled.logical = None;
+        let unavailable_mode = ManualOutputPlacement {
+            mode: Some("640x480@60".parse().unwrap()),
+            ..placement("DP-1")
+        };
 
         for placements in [
             Vec::new(),
             vec![placement("DP-1"), placement("DP-1")],
             vec![placement("HDMI-A-1")],
             vec![placement("DP-2")],
+            vec![unavailable_mode],
         ] {
             let mut state = DaemonState::new(config("home"));
             let mut client = FakeClient::new(vec![output("DP-1"), disabled.clone()]);
@@ -550,6 +578,7 @@ mod tests {
                 placements: vec![ManualOutputPlacement {
                     output: "DP-2".to_string(),
                     position: Position { x: 10, y: 10 },
+                    mode: None,
                 }],
             },
             &mut state,
@@ -574,10 +603,12 @@ mod tests {
                     ManualOutputPlacement {
                         output: "DP-1".to_string(),
                         position: Position { x: -100, y: -50 },
+                        mode: None,
                     },
                     ManualOutputPlacement {
                         output: "DP-2".to_string(),
                         position: Position { x: 3_340, y: -50 },
+                        mode: None,
                     },
                 ],
             },
@@ -660,6 +691,7 @@ mod tests {
                 placements: vec![ManualOutputPlacement {
                     output: "DP-2".to_string(),
                     position: Position { x: 3_440, y: 0 },
+                    mode: None,
                 }],
             },
             &mut state,
