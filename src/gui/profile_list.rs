@@ -5,7 +5,7 @@ use std::collections::HashSet;
 pub fn build_new_profile(existing: &[Profile], connected_outputs: &[NiriOutput]) -> Profile {
     let name = next_profile_name(existing);
     Profile {
-        id: unique_profile_id(existing, &name),
+        id: unique_profile_id(existing.iter().map(|profile| profile.id.as_str()), &name),
         name,
         priority: next_profile_priority(existing),
         enabled: true,
@@ -15,6 +15,22 @@ pub fn build_new_profile(existing: &[Profile], connected_outputs: &[NiriOutput])
             .map(profile_output_from_output)
             .collect(),
     }
+}
+
+/// Derives the id of the profile at `index` from its name again, unique among the other
+/// profiles. Use it only for a profile that is not saved yet: the daemon and the control
+/// socket know saved profiles by id.
+pub fn rederive_profile_id(profiles: &mut [Profile], index: usize) {
+    let Some(profile) = profiles.get(index) else {
+        return;
+    };
+    let other_ids = profiles
+        .iter()
+        .enumerate()
+        .filter(|(other, _)| *other != index)
+        .map(|(_, other)| other.id.as_str());
+    let id = unique_profile_id(other_ids, &profile.name);
+    profiles[index].id = id;
 }
 
 pub fn remove_profile(profiles: &mut Vec<Profile>, profile_id: &str) -> bool {
@@ -50,12 +66,9 @@ fn next_profile_priority(existing: &[Profile]) -> i32 {
         .unwrap_or(0)
 }
 
-fn unique_profile_id(existing: &[Profile], base: &str) -> String {
-    let base = profile_id_from_name(base);
-    let ids = existing
-        .iter()
-        .map(|profile| profile.id.as_str())
-        .collect::<HashSet<_>>();
+fn unique_profile_id<'a>(existing_ids: impl IntoIterator<Item = &'a str>, name: &str) -> String {
+    let base = profile_id_from_name(name);
+    let ids = existing_ids.into_iter().collect::<HashSet<_>>();
     if !ids.contains(base.as_str()) {
         return base;
     }
@@ -152,6 +165,25 @@ mod tests {
         );
         assert_eq!(profile.outputs[0].scale, Some(1.5));
         assert_eq!(profile.outputs[0].position, Some(Position { x: 0, y: 0 }));
+    }
+
+    #[test]
+    fn rederived_profile_id_follows_name_and_stays_unique() {
+        let mut profiles = vec![
+            profile("home", "Home", 0),
+            profile("profile-2", "Work Desk", 1),
+        ];
+
+        rederive_profile_id(&mut profiles, 1);
+        assert_eq!(profiles[1].id, "work-desk");
+
+        rederive_profile_id(&mut profiles, 1);
+        assert_eq!(profiles[1].id, "work-desk");
+
+        profiles[1].name = "Home".to_owned();
+        rederive_profile_id(&mut profiles, 1);
+        assert_eq!(profiles[1].id, "home-2");
+        assert_eq!(profiles[0].id, "home");
     }
 
     #[test]
