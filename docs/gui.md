@@ -8,6 +8,8 @@ Run the native editor with:
 cargo run --bin niri-monitors-gui
 ```
 
+After `make install` (see the README), you can also start `Niri Monitors` from an app launcher. The installed desktop entry is `niri-monitors.desktop`. The window's Wayland app ID is `niri-monitors`. This value is the same as the desktop entry name and the icon name, so launchers, docks, and niri can link the window to them. To match the window in a niri window rule, use `match app-id="^niri-monitors$"`.
+
 The GUI loads the native TOML config from the same default path as the daemon:
 
 ```text
@@ -27,7 +29,7 @@ The GUI currently has no CLI flag for an alternate config path.
 ## Typical Workflow
 
 1. Start niri so `NIRI_SOCKET` is available.
-2. Run `cargo run --bin niri-monitors-gui`.
+2. Start `Niri Monitors` from your app launcher, or run `cargo run --bin niri-monitors-gui`.
 3. With no profiles configured, drag monitors on the canvas and use `Apply` to apply the live layout.
 4. Use `+ Save as profile` (or `+ New profile` once profiles exist) to save the current outputs as a reusable profile. The new profile starts in rename mode.
 5. Select a profile in the sidebar.
@@ -42,7 +44,7 @@ The GUI currently has no CLI flag for an alternate config path.
 - Canvas (center): the monitor arrangement. A dot grid fills the background and a small crosshair marks logical `0, 0`.
 - Inspector (right): settings for the selected output, the layout check, and the plan preview. Below 1000 px of window width, the inspector moves under the canvas.
 
-The GUI starts in the light theme. The sun or moon button at the right end of the header switches between the light and dark themes. The GUI keeps your choice and uses it again at the next start. It stores the choice in `$XDG_DATA_HOME/monitoradlo/app.ron`, or in `$HOME/.local/share/monitoradlo/app.ron` when `XDG_DATA_HOME` is not set. To go back to the light default, delete that file. The GUI does not keep the window size or position.
+The GUI starts in the light theme. The sun or moon button at the right end of the header switches between the light and dark themes. The GUI keeps your choice and uses it again at the next start. It stores the choice in `$XDG_DATA_HOME/niri-monitors/app.ron`, or in `$HOME/.local/share/niri-monitors/app.ron` when `XDG_DATA_HOME` is not set. eframe gets this directory name from the window's app ID. To go back to the light default, delete that file. The GUI does not keep the window size or position.
 
 ### Daemon status pill
 
@@ -144,3 +146,4 @@ Keep this page aligned with user-visible labels and button behavior when editing
 - `The config could not be loaded`: fix the TOML syntax or validation error and restart the GUI.
 - `Preview plan` disabled: hover it for the reason. Start `niri-monitorsd`, save GUI changes, then retry.
 - `niri unreachable` or `Cannot reach niri` on the canvas: the GUI cannot reach niri through `NIRI_SOCKET`. Start it from inside the niri session, or start the daemon so the GUI can use daemon-reported outputs.
+- The launcher entry does nothing, or is missing: check that `niri-monitors.desktop` is in `$(PREFIX)/share/applications`, and that its `Exec=` line has an absolute path. If you edit the file by hand, do not use a bare `niri-monitors-gui`, because niri's `PATH` usually does not contain `~/.cargo/bin` or `~/.local/bin`. For a `/usr/local` or `~/.local` install, make sure your launcher searches `XDG_DATA_DIRS` and `XDG_DATA_HOME`. Most launchers do this by default.

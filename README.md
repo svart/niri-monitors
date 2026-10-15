@@ -65,11 +65,31 @@ Arrange outputs directly in the GUI without a profile, or create a profile, arra
 | `cargo fmt` | Format the crate. |
 | `cargo clippy` | Run lints. |
 
-Install the binaries locally:
+## Installation
+
+Install with the `Makefile` to get both binaries, a desktop entry for app launchers, an icon, and the systemd user unit:
 
 ```sh
-cargo install --path .
+make            # cargo build --release --locked
+make install    # PREFIX=~/.local, no root needed
 ```
+
+To install for all users, set the prefix and use sudo. `make install` does not build, so cargo does not run as root:
+
+```sh
+sudo make install PREFIX=/usr/local
+```
+
+| Installed file | Path (default `PREFIX` is `~/.local`) |
+| --- | --- |
+| `niri-monitorsd`, `niri-monitors-gui` | `$(PREFIX)/bin/` |
+| Desktop entry | `$(PREFIX)/share/applications/niri-monitors.desktop` |
+| Icon | `$(PREFIX)/share/icons/hicolor/scalable/apps/niri-monitors.svg` |
+| systemd user unit | `$(SYSTEMDUSERUNITDIR)/niri-monitorsd.service`, default `$(PREFIX)/share/systemd/user` |
+
+The installed desktop entry and unit use absolute binary paths. This matters because programs started by niri get niri's environment, and that `PATH` often does not contain `~/.cargo/bin` or `~/.local/bin`. To use the CLI binaries from a shell, add `~/.local/bin` to your shell's `PATH`. To remove the files, run `make uninstall` with the same variables. Packagers can use `make DESTDIR="$pkgdir" PREFIX=/usr SYSTEMDUSERUNITDIR=/usr/lib/systemd/user install`.
+
+`cargo install --path .` still works, but it installs only the binaries into `~/.cargo/bin`. It does not install the desktop entry, icon, or unit.
 
 ## Configuration
 

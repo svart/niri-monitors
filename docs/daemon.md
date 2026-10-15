@@ -178,13 +178,14 @@ Tests in these modules document intended behavior. If this page and tests disagr
 
 ## systemd User Service
 
-Build and install the daemon binary somewhere stable. For a cargo user install:
+`make install` (see the README) installs the unit with `ExecStart` set to the installed daemon path. Enable it:
 
 ```sh
-cargo install --path .
+systemctl --user daemon-reload
+systemctl --user enable --now niri-monitorsd.service
 ```
 
-Install the example service:
+If you installed with `cargo install --path .`, copy the example unit instead. Its `ExecStart` is `~/.cargo/bin/niri-monitorsd`:
 
 ```sh
 mkdir -p ~/.config/systemd/user
@@ -192,6 +193,8 @@ cp contrib/systemd/niri-monitorsd.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now niri-monitorsd.service
 ```
+
+A unit in `~/.config/systemd/user/` overrides an installed unit with the same name. If you change from the cargo install to `make install`, remove the copied unit.
 
 Check logs:
 

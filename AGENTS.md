@@ -9,7 +9,8 @@ This is a Rust crate for `niri-monitors`, centered on a daemon that manages niri
 Current structure:
 
 ```text
-README.md                 # User-facing project overview and quick start
+README.md                 # User-facing project overview, quick start, installation
+Makefile                  # Release build and PREFIX/DESTDIR install of binaries and contrib files
 src/
   lib.rs                  # Library module exports
   model.rs                # Shared config/runtime data types
@@ -42,6 +43,9 @@ docs/
   config.md               # TOML schema, matching semantics, validation, apply behavior
   daemon.md               # Daemon CLI, reconcile behavior, control socket protocol, systemd
   gui.md                  # GUI usage and troubleshooting notes
+contrib/desktop/
+  niri-monitors.desktop   # Desktop entry for app launchers
+  niri-monitors.svg       # App icon (hicolor scalable)
 contrib/systemd/
   niri-monitorsd.service  # Example systemd user service
 ```
@@ -57,6 +61,8 @@ Do not parse niri human-readable output. Use niri JSON IPC through the project-o
 Do not add non-Rust runtime dependencies for daemon behavior.
 
 Do not edit generated/build output under `target/`.
+
+The GUI Wayland app_id is `niri-monitors` (`src/bin/niri-monitors-gui.rs`). It must match the desktop entry and icon basenames in `contrib/desktop/` and the `APP_ID` in `Makefile`. eframe also uses it as the GUI storage directory name.
 
 The GUI currently uses the default config path only. The daemon supports `--config PATH`.
 
@@ -90,6 +96,8 @@ docs/daemon.md
 docs/config.md
 docs/gui.md
 AGENTS.md
+Makefile
+contrib/desktop/niri-monitors.desktop
 contrib/systemd/niri-monitorsd.service
 ```
 
