@@ -226,7 +226,7 @@ Before profile or manual-layout positions are applied, the enabled outputs are s
 Use dry-run before applying a new profile:
 
 ```sh
-cargo run --bin niri-monitorsd -- --dry-run --once
+niri-monitorsd --dry-run --once
 ```
 
 ## Save Behavior
@@ -236,15 +236,3 @@ cargo run --bin niri-monitorsd -- --dry-run --once
 A save rewrites the whole file from the GUI's in-memory config. Comments, key order, and other hand formatting are not kept; the `.bak` file still has them. The saved file uses the layout shown in this document: matchers and positions as inline tables, one matcher per line, and no empty condition arrays.
 
 When the daemon is running, the GUI asks it to reload the saved config after a successful save. `Preview plan` is disabled while the GUI has unsaved changes because the daemon only reads the file on disk.
-
-## Agent Reference
-
-Source-of-truth implementation points:
-
-- Data model and TOML field names: `src/model.rs`.
-- Config path resolution, missing/empty config handling, saved TOML layout, backups, and validation: `src/config.rs`.
-- Matcher semantics and profile ordering: `src/matching.rs`.
-- Apply-plan validation, action ordering, warnings, and dry-run text: `src/niri/apply.rs`.
-- Runtime manual/automatic selection behavior: `src/daemon.rs` and `src/control.rs`.
-
-Tests in those files are part of the expected behavior. Update this document in the same change as any config schema, matcher, validation, or apply-plan change.

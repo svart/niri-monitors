@@ -2,34 +2,16 @@
 
 `niri-monitors-gui` is a native eframe/egui editor for the same TOML config used by `niri-monitorsd`. It has a header with the daemon status, a profile sidebar, a monitor canvas, and an inspector for the selected output.
 
-Run the native editor with:
+Start `Niri Monitors` from an app launcher, or run `niri-monitors-gui`. The launcher entry comes from `make install`; see [installation.md](installation.md). From a source checkout, run `cargo run --bin niri-monitors-gui`.
 
-```sh
-cargo run --bin niri-monitors-gui
-```
+The window's Wayland app ID is `niri-monitors`. This value is the same as the desktop entry name and the icon name, so launchers, docks, and niri can link the window to them. To match the window in a niri window rule, use `match app-id="^niri-monitors$"`.
 
-After `make install` (see the README), you can also start `Niri Monitors` from an app launcher. The installed desktop entry is `niri-monitors.desktop`. The window's Wayland app ID is `niri-monitors`. This value is the same as the desktop entry name and the icon name, so launchers, docks, and niri can link the window to them. To match the window in a niri window rule, use `match app-id="^niri-monitors$"`.
-
-The GUI loads the native TOML config from the same default path as the daemon:
-
-```text
-$XDG_CONFIG_HOME/niri-monitors/config.toml
-```
-
-or, when `XDG_CONFIG_HOME` is not set:
-
-```text
-$HOME/.config/niri-monitors/config.toml
-```
-
-If the config file does not exist or is empty, the GUI starts with an empty draft instead of failing. You can arrange and apply the live monitor layout without creating a profile, or create a profile and save it to write the file.
-
-The GUI currently has no CLI flag for an alternate config path.
+The GUI loads the config from the same default path as the daemon (see [config.md](config.md#path)). It has no CLI flag for an alternate config path. If the config file does not exist or is empty, the GUI starts with an empty draft instead of failing. You can arrange and apply the live monitor layout without creating a profile, or create a profile and save it to write the file.
 
 ## Typical Workflow
 
 1. Start niri so `NIRI_SOCKET` is available.
-2. Start `Niri Monitors` from your app launcher, or run `cargo run --bin niri-monitors-gui`.
+2. Start `Niri Monitors` from your app launcher, or run `niri-monitors-gui`.
 3. With no profiles configured, drag monitors on the canvas or change a monitor's parameters in the inspector, then use `Apply` to apply the live layout.
 4. Use `+ Save as profile` (or `+ New profile` once profiles exist) to save the current outputs as a reusable profile. The new profile starts in rename mode.
 5. Select a profile in the sidebar.
@@ -80,7 +62,7 @@ Each monitor tile shows the connector, the make and model, and its logical size,
 - Deleting a profile asks for confirmation in a dialog.
 - Results such as `Saved` or `Applying failed` appear as toasts in the bottom-right corner. Click a toast to dismiss it.
 - Config load and validation errors appear in a red banner under the header. Save stays disabled until the config is valid.
-- The GUI does not edit profile conditions, priority, or the profile `enabled` flag. Edit those in the TOML file; see `docs/config.md`.
+- The GUI does not edit profile conditions, priority, or the profile `enabled` flag. Edit those in the TOML file; see [config.md](config.md#profiles).
 
 ### Inspector
 
@@ -134,25 +116,9 @@ The GUI polls daemon status once per second. It can request preview plans and as
 
 If the daemon is unavailable, profile editing and direct live-layout apply stay available as long as the GUI can reach niri through `NIRI_SOCKET` or has existing profile data. `Preview plan` stays disabled until the daemon is running and the current draft is saved.
 
-## Agent Reference
-
-Implementation entrypoints:
-
-- GUI app state, polling, save, actions, shortcuts, and panel layout: `src/gui/app.rs`.
-- Palettes, widget styling, shared widgets (cards, pills, buttons), and the stored theme choice: `src/gui/theme.rs`.
-- Header and daemon status pill text: `src/gui/header.rs`.
-- Profile and output lists: `src/gui/sidebar.rs`.
-- Output settings and live-layout controls: `src/gui/inspector.rs`.
-- Canvas tiles, dragging, snapping, overlap highlighting, and nudging: `src/gui/canvas.rs`.
-- Toasts: `src/gui/toast.rs`.
-- Control socket client and timeouts: `src/gui/daemon_client.rs`.
-- Profile creation and deletion defaults: `src/gui/profile_list.rs`.
-
-Keep this page aligned with user-visible labels and button behavior when editing GUI code.
-
 ## Troubleshooting
 
 - `The config could not be loaded`: fix the TOML syntax or validation error and restart the GUI.
 - `Preview plan` disabled: hover it for the reason. Start `niri-monitorsd`, save GUI changes, then retry.
 - `niri unreachable` or `Cannot reach niri` on the canvas: the GUI cannot reach niri through `NIRI_SOCKET`. Start it from inside the niri session, or start the daemon so the GUI can use daemon-reported outputs.
-- The launcher entry does nothing, or is missing: check that `niri-monitors.desktop` is in `$(PREFIX)/share/applications`, and that its `Exec=` line has an absolute path. If you edit the file by hand, do not use a bare `niri-monitors-gui`, because niri's `PATH` usually does not contain `~/.cargo/bin` or `~/.local/bin`. For a `/usr/local` or `~/.local` install, make sure your launcher searches `XDG_DATA_DIRS` and `XDG_DATA_HOME`. Most launchers do this by default.
+- The launcher entry does nothing, or is missing: see [installation.md](installation.md#troubleshooting).

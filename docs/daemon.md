@@ -6,16 +6,9 @@ The daemon requires `NIRI_SOCKET`. The control socket also requires `XDG_RUNTIME
 
 ## Config Path
 
-By default, the daemon reads the first path implied by the environment:
+By default, the daemon reads `$XDG_CONFIG_HOME/niri-monitors/config.toml`, or `~/.config/niri-monitors/config.toml` when `XDG_CONFIG_HOME` is not set. Use `--config PATH` to point at another file. See [config.md](config.md) for the config format.
 
-```text
-$XDG_CONFIG_HOME/niri-monitors/config.toml
-~/.config/niri-monitors/config.toml
-```
-
-Use `--config PATH` to point at another file.
-
-If the config file is missing or empty, the daemon starts with an empty in-memory config. It still polls niri outputs and listens on the control socket, but it will not apply monitor changes until a saved config with matching profiles is loaded. See `docs/config.md` for the config format.
+If the config file is missing or empty, the daemon starts with an empty in-memory config. It still polls niri outputs and listens on the control socket, but it will not apply monitor changes until a saved config with matching profiles is loaded.
 
 ## CLI
 
@@ -29,29 +22,16 @@ If the config file is missing or empty, the daemon starts with an empty in-memor
 
 ## Manual Run
 
-Print the selected profile plan without applying anything:
+Normally the systemd user service runs the daemon; see [installation.md](installation.md#enable-the-daemon). `--dry-run --once` is safe to run at any time. Stop the service before you run a second continuous daemon, because a new daemon replaces the control socket of the running one.
 
 ```sh
-cargo run --bin niri-monitorsd -- --dry-run --once
+niri-monitorsd --dry-run --once   # print the selected profile's plan, apply nothing
+niri-monitorsd --once             # apply once and exit
+niri-monitorsd                    # run continuously with the control socket
+niri-monitorsd --dry-run          # run continuously without applying changes
 ```
 
-Apply once and exit:
-
-```sh
-cargo run --bin niri-monitorsd -- --once
-```
-
-Run continuously with the control socket enabled:
-
-```sh
-cargo run --bin niri-monitorsd
-```
-
-Run continuously without applying changes:
-
-```sh
-cargo run --bin niri-monitorsd -- --dry-run
-```
+From a source checkout, replace `niri-monitorsd` with `cargo run --bin niri-monitorsd --`.
 
 Continuous dry-run mode suppresses niri output actions, but it currently does not print every plan. Use `--dry-run --once` when you need readable planned actions.
 
@@ -62,8 +42,8 @@ On startup and after detected output changes, the daemon:
 - Reads connected outputs from niri JSON IPC.
 - Skips automatic profile selection if a manual layout is active and automatic loading is disabled.
 - Selects the manual profile if one is set, enabled, and still matches connected outputs.
-- Otherwise selects the enabled matching profile with the highest priority, then highest specificity (see `docs/config.md`), then config order.
-- Builds an apply plan and refuses unsafe plans such as enabled outputs that overlap after the plan or disabling every connected output when `prevent_disable_all = true`. See `docs/config.md` for how the resulting layout is checked.
+- Otherwise selects the enabled matching profile with the highest priority, then highest specificity (see [config.md](config.md#profiles)), then config order.
+- Builds an apply plan and refuses unsafe plans such as enabled outputs that overlap after the plan or disabling every connected output when `prevent_disable_all = true`. See [config.md](config.md#validation-and-safety) for how the resulting layout is checked.
 - Plans only the settings that differ from the current output state. If the outputs already match the profile, the plan is empty and nothing is sent to niri.
 - Applies the plan unless `--dry-run` or automatic loading is disabled, then reads the outputs from niri again.
 
@@ -162,55 +142,13 @@ Mode changes:
 - `activate_profile` switches to manual profile, then reconciles and applies the profile even though automatic loading is paused.
 - `apply_manual_layout` switches to manual layout.
 
-`apply_manual_layout` supports ad-hoc runtime layouts through the control socket. Each placement has an `output` connector and a `position`. It can also have a `mode`, `scale`, and `transform`, written as in the config file (see `docs/config.md`). A setting that is left out keeps its current value. The daemon rejects these with `BAD_REQUEST`: empty placement lists, duplicate outputs, disconnected outputs, disabled outputs, modes the output does not offer, and scales that are not finite and greater than zero. It then applies mode, scale, rotation, and position actions, in that order. It does not change VRR. A setting that already matches gets no action; a scale within niri's rounding counts as a match. The overlap check uses the size an output has after its new mode, scale, and rotation. If a placement changes the mode but not the scale, niri can pick a new automatic scale, so the size after the apply can differ. Before applying, the daemon normalizes enabled output positions into one enclosing rectangle whose top-left coordinate is `0,0`, so outputs without a placement can move too. Outputs already at their final position get no action. Layouts with positive-area output overlap are rejected with `LAYOUT_OVERLAPS`; edge-touching output borders are allowed. A rejected layout does not change the daemon mode.
-
-## Agent Reference
-
-Implementation entrypoints:
-
-- CLI parsing and startup: `src/bin/niri-monitorsd.rs`.
-- Daemon state, modes, reconcile loop, and manual layout apply: `src/daemon.rs`.
-- Profile selection: `src/matching.rs`.
-- Apply plan validation, ordering, dry-run formatting, and execution: `src/niri/apply.rs`.
-- Control request/response types and handlers: `src/control.rs`.
-
-Tests in these modules document intended behavior. If this page and tests disagree, update this page or intentionally change code with tests.
-
-## systemd User Service
-
-`make install` (see the README) installs the unit with `ExecStart` set to the installed daemon path. Enable it:
-
-```sh
-systemctl --user daemon-reload
-systemctl --user enable --now niri-monitorsd.service
-```
-
-If you installed with `cargo install --path .`, copy the example unit instead. Its `ExecStart` is `~/.cargo/bin/niri-monitorsd`:
-
-```sh
-mkdir -p ~/.config/systemd/user
-cp contrib/systemd/niri-monitorsd.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now niri-monitorsd.service
-```
-
-A unit in `~/.config/systemd/user/` overrides an installed unit with the same name. If you change from the cargo install to `make install`, remove the copied unit.
-
-Check logs:
-
-```sh
-journalctl --user -u niri-monitorsd.service -f
-```
-
-A user service must be able to see `NIRI_SOCKET`. Depending on how niri starts your user services, you may need to import the environment from inside the niri session before starting the service:
-
-```sh
-systemctl --user import-environment NIRI_SOCKET XDG_RUNTIME_DIR WAYLAND_DISPLAY DISPLAY
-```
+`apply_manual_layout` supports ad-hoc runtime layouts through the control socket. Each placement has an `output` connector and a `position`. It can also have a `mode`, `scale`, and `transform`, written as in the config file (see [config.md](config.md#output-settings)). A setting that is left out keeps its current value. The daemon rejects these with `BAD_REQUEST`: empty placement lists, duplicate outputs, disconnected outputs, disabled outputs, modes the output does not offer, and scales that are not finite and greater than zero. It then applies mode, scale, rotation, and position actions, in that order. It does not change VRR. A setting that already matches gets no action; a scale within niri's rounding counts as a match. The overlap check uses the size an output has after its new mode, scale, and rotation. If a placement changes the mode but not the scale, niri can pick a new automatic scale, so the size after the apply can differ. Before applying, the daemon normalizes enabled output positions into one enclosing rectangle whose top-left coordinate is `0,0`, so outputs without a placement can move too. Outputs already at their final position get no action. Layouts with positive-area output overlap are rejected with `LAYOUT_OVERLAPS`; edge-touching output borders are allowed. A rejected layout does not change the daemon mode.
 
 ## Troubleshooting
 
-If startup fails with `NIRI_SOCKET is not set`, start the daemon from inside the niri session or import the variable into the user service environment.
+Service logs: `journalctl --user -u niri-monitorsd.service -f`. For installing and enabling the service, see [installation.md](installation.md#enable-the-daemon).
+
+If startup fails with `NIRI_SOCKET is not set`, start the daemon from inside the niri session or [import the variable](installation.md#enable-the-daemon) into the user service environment.
 
 If startup fails with `XDG_RUNTIME_DIR is not set`, either run with `--no-control-socket`, run `--once`, or start it in a normal user session where `XDG_RUNTIME_DIR` exists.
 

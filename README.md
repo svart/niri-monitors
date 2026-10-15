@@ -1,158 +1,69 @@
 # niri-monitors
 
-`niri-monitors` manages monitor profiles for the niri compositor. It provides:
+Monitor profiles for the [niri](https://github.com/YaLTeR/niri) Wayland compositor.
 
-- `niri-monitorsd`: a daemon that polls niri outputs, selects a matching profile, and applies monitor settings through niri JSON IPC.
-- `niri-monitors-gui`: a native Rust GUI for creating profiles, arranging profile or live monitor layouts, saving TOML config, and previewing daemon plans.
+`niri-monitors` remembers how you arrange your monitors and applies the right arrangement when monitors are connected or disconnected. It has two programs:
 
-The project deliberately uses niri JSON IPC. It does not parse human-readable `niri msg` output.
+- `niri-monitorsd`: a daemon that watches niri outputs, selects the matching profile, and applies it.
+- `niri-monitors-gui`: a native editor to arrange monitors on a canvas, save profiles, and preview what the daemon will do.
 
-This project is inspired by [monitoradlo](https://github.com/kumekay/monitoradlo) and [kanshi](https://sr.ht/~emersion/kanshi/).
+The project is inspired by [kanshi](https://sr.ht/~emersion/kanshi/) and [monitoradlo](https://github.com/kumekay/monitoradlo).
 
-## Requirements
+## Install
 
-- Rust and Cargo.
-- A running niri session.
-- `NIRI_SOCKET` set for any process that talks directly to niri. This is normally available to programs launched from inside niri.
-- `XDG_RUNTIME_DIR` set when using the daemon control socket or GUI daemon integration.
-
-## Quick Start
-
-The daemon and GUI use one config file:
-
-```text
-$XDG_CONFIG_HOME/niri-monitors/config.toml
-```
-
-or, if `XDG_CONFIG_HOME` is not set:
-
-```text
-$HOME/.config/niri-monitors/config.toml
-```
-
-The config file may be missing or empty. In that case, the daemon and GUI start with an empty in-memory config. With no profiles, the daemon observes outputs but does not apply profile-driven monitor changes.
-
-Run a safe one-shot plan without applying changes:
+You need a Rust toolchain and a running niri session.
 
 ```sh
-cargo run --bin niri-monitorsd -- --dry-run --once
-```
-
-Run the daemon continuously:
-
-```sh
-cargo run --bin niri-monitorsd
-```
-
-Open the GUI editor:
-
-```sh
-cargo run --bin niri-monitors-gui
-```
-
-Arrange outputs directly in the GUI without a profile, or create a profile, arrange outputs on the canvas, save it, then use `Preview plan` while the daemon is running. The GUI writes `config.toml.bak` before replacing an existing config. A GUI save rewrites the whole file, so comments added by hand are kept only in the backup.
-
-## Commands
-
-| Command | Description |
-| --- | --- |
-| `cargo run --bin niri-monitorsd -- --dry-run --once` | Select the current profile and print the apply plan without changing monitors. |
-| `cargo run --bin niri-monitorsd -- --once` | Reconcile once, apply if needed, then exit. |
-| `cargo run --bin niri-monitorsd` | Run continuously with the control socket enabled. |
-| `cargo run --bin niri-monitorsd -- --log-level debug` | Run with more verbose tracing output. |
-| `cargo run --bin niri-monitors-gui` | Open the native GUI. |
-| `cargo test` | Run the Rust test suite. |
-| `cargo fmt` | Format the crate. |
-| `cargo clippy` | Run lints. |
-
-## Installation
-
-Install with the `Makefile` to get both binaries, a desktop entry for app launchers, an icon, and the systemd user unit:
-
-```sh
+git clone https://github.com/svart/niri-monitors
+cd niri-monitors
 make            # cargo build --release --locked
-make install    # PREFIX=~/.local, no root needed
+make install    # installs into ~/.local, no root needed
 systemctl --user daemon-reload
 systemctl --user enable --now niri-monitorsd.service
 ```
 
-`make install` does not build, so run `make` first. It also does not enable the daemon. The `systemctl` commands start it now and, through `graphical-session.target`, with each later niri session. See `docs/daemon.md` for logs and environment troubleshooting.
+This installs both binaries, a desktop entry, an icon, and a systemd user unit, then starts the daemon with each niri session. See [docs/installation.md](docs/installation.md) for system-wide installs, packaging, `cargo install`, and environment problems.
 
-To install for all users, set the prefix and use sudo. Because `make install` does not build, cargo does not run as root:
+## Usage
+
+1. Start **Niri Monitors** from your app launcher, or run `niri-monitors-gui`.
+2. Drag monitors on the canvas or edit them in the inspector, then click `Apply`.
+3. Click `+ Save as profile`, give the profile a name, and click `Save`.
+4. For each other monitor setup (docked, projector, laptop only), connect it, click `+ New profile`, arrange the monitors, and click `Save`.
+
+After each save, the daemon reloads the config and applies the matching profile whenever monitors change. To see what the daemon would do, without changing anything:
 
 ```sh
-sudo make install PREFIX=/usr/local
+niri-monitorsd --dry-run --once
 ```
 
-| Installed file | Path (default `PREFIX` is `~/.local`) |
-| --- | --- |
-| `niri-monitorsd`, `niri-monitors-gui` | `$(PREFIX)/bin/` |
-| Desktop entry | `$(PREFIX)/share/applications/niri-monitors.desktop` |
-| Icon | `$(PREFIX)/share/icons/hicolor/scalable/apps/niri-monitors.svg` |
-| systemd user unit | `$(SYSTEMDUSERUNITDIR)/niri-monitorsd.service`, default `$(PREFIX)/share/systemd/user` |
-
-The installed desktop entry and unit use absolute binary paths. This matters because programs started by niri get niri's environment, and that `PATH` often does not contain `~/.cargo/bin` or `~/.local/bin`. To use the CLI binaries from a shell, add `~/.local/bin` to your shell's `PATH`. To remove the files, run `make uninstall` with the same variables. Packagers can use `make DESTDIR="$pkgdir" PREFIX=/usr SYSTEMDUSERUNITDIR=/usr/lib/systemd/user install`.
-
-`cargo install --path .` still works, but it installs only the binaries into `~/.cargo/bin`. It does not install the desktop entry, icon, or unit.
-
-## Configuration
-
-Profiles are TOML. The smallest valid on-disk config is:
-
-```toml
-version = 1
-```
-
-Profiles match connected outputs by exact connector, description, make, model, and/or serial fields. Prefer the GUI for first-time setup because it can populate matchers and output settings from live niri data.
-
-See `docs/config.md` for the full schema, defaults, profile matching rules, and safety checks.
-
-## Daemon And GUI
-
-`niri-monitorsd` reads the config, talks to niri through `NIRI_SOCKET`, and exposes a local JSON control socket at:
+## How It Works
 
 ```text
-$XDG_RUNTIME_DIR/niri-monitors.sock
+         JSON IPC                           control socket (JSON)
+niri  <----------->  niri-monitorsd  <------------------------->  niri-monitors-gui
+  ^                        |                                            |      |
+  |                        +<--- reads --- config.toml <--- writes -----+      |
+  +------------------------------- JSON IPC (live outputs) --------------------+
 ```
 
-The GUI can run without the daemon when it can reach niri directly. If the daemon is running, the GUI uses the control socket for status, preview plans, live manual layout application, and config reload after saving. Manual profile operations remain available through the control socket protocol.
+- The daemon polls niri outputs (every 1.5 s by default). When they change, it waits for hotplug to settle, then selects a profile.
+- A profile matches when every monitor it lists is connected. The highest priority wins; ties go to the more specific profile, then to config order.
+- The daemon plans only the settings that differ from the current state. It refuses unsafe plans, such as overlapping monitors or all monitors off, and applies the rest through niri JSON IPC. It never parses human-readable `niri msg` output.
+- The GUI edits `~/.config/niri-monitors/config.toml` and asks the daemon to reload after each save. Without the daemon, the GUI still edits profiles and applies live layouts through niri directly.
 
-Useful docs:
+## Documentation
 
-- `docs/daemon.md`: daemon CLI, control protocol, systemd setup, troubleshooting.
-- `docs/gui.md`: GUI workflow, buttons, daemon integration, troubleshooting.
-- `docs/config.md`: TOML format and matching/apply semantics.
+| Document | Contents |
+| --- | --- |
+| [Installation](docs/installation.md) | Requirements, install options, systemd service, uninstall, packaging. |
+| [Configuration](docs/config.md) | TOML schema, profile matching, apply order, validation and safety checks. |
+| [Daemon](docs/daemon.md) | CLI options, modes, reconcile behavior, control socket protocol, troubleshooting. |
+| [GUI](docs/gui.md) | Editor workflow, canvas, inspector, keyboard shortcuts, troubleshooting. |
+| [Architecture](docs/architecture.md) | Components, data flow, source layout, design decisions, development. |
 
-## Architecture
+Contributors and coding agents also read [AGENTS.md](AGENTS.md).
 
-Core modules live under `src/`:
+## License
 
-- `model.rs`: shared config/runtime data types.
-- `config.rs`: config paths, load/save, validation, backups.
-- `matching.rs`: matcher evaluation and profile selection.
-- `daemon.rs`: reconcile loop, daemon state, profile error handling.
-- `control.rs`: local JSON control socket protocol.
-- `placement.rs`: monitor rectangle, overlap, normalization, and snapping math.
-- `niri/`: niri IPC, output normalization, apply planning and execution.
-- `gui/`: eframe/egui application and editor panels.
-
-Agent-facing repository guidance is in `AGENTS.md`. When behavior and docs disagree, treat source and tests as the current truth, then update docs in the same change.
-
-## Development
-
-The `gui` feature is enabled by default, so existing build, run, test, and install commands continue to include both the daemon and GUI. When working only on daemon and core code, skip the GUI dependency graph with:
-
-```sh
-cargo build --no-default-features --bin niri-monitorsd
-cargo test --no-default-features --lib
-```
-
-The native GUI intentionally enables eframe's Wayland, OpenGL, default-font, and accessibility support. X11 and web-only support are excluded because `niri-monitors-gui` targets niri's native Wayland session.
-
-Before committing code or behavior changes, run:
-
-```sh
-cargo fmt
-cargo test
-cargo clippy
-```
+MIT. See [LICENSE](LICENSE).

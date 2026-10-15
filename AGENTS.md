@@ -9,7 +9,7 @@ This is a Rust crate for `niri-monitors`, centered on a daemon that manages niri
 Current structure:
 
 ```text
-README.md                 # User-facing project overview, quick start, installation
+README.md                 # Short overview: what it is, install, usage, how it works, doc index
 Makefile                  # Release build and PREFIX/DESTDIR install of binaries and contrib files
 src/
   lib.rs                  # Library module exports
@@ -40,8 +40,10 @@ src/
     niri-monitorsd.rs     # Daemon CLI entrypoint
     niri-monitors-gui.rs  # Native GUI entrypoint
 docs/
+  installation.md         # Requirements, make/cargo install, systemd service, uninstall, packaging
+  architecture.md         # Components, data flow, threads, source layout, design decisions, development
   config.md               # TOML schema, matching semantics, validation, apply behavior
-  daemon.md               # Daemon CLI, reconcile behavior, control socket protocol, systemd
+  daemon.md               # Daemon CLI, modes, reconcile behavior, control socket protocol
   gui.md                  # GUI usage and troubleshooting notes
 contrib/desktop/
   niri-monitors.desktop   # Desktop entry for app launchers
@@ -50,7 +52,9 @@ contrib/systemd/
   niri-monitorsd.service  # Example systemd user service
 ```
 
-If this structure changes, update this file in the same change. `AGENTS.md` should stay in sync with the project layout so future agents can orient quickly.
+If this structure changes, update this file and the source layout table in `docs/architecture.md` in the same change. Both should stay in sync with the project layout so future agents can orient quickly.
+
+Keep `README.md` short. Put details in the matching file under `docs/` and link to it from the README's documentation table.
 
 ## Development Rules
 
@@ -96,6 +100,8 @@ Keep these files consistent with implementation details:
 
 ```text
 README.md
+docs/installation.md
+docs/architecture.md
 docs/daemon.md
 docs/config.md
 docs/gui.md
