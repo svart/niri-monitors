@@ -5,7 +5,6 @@ use std::collections::HashSet;
 pub fn build_new_profile(existing: &[Profile], connected_outputs: &[NiriOutput]) -> Profile {
     let name = next_profile_name(existing);
     Profile {
-        id: unique_profile_id(existing, &name),
         name,
         priority: next_profile_priority(existing),
         enabled: true,
@@ -17,10 +16,10 @@ pub fn build_new_profile(existing: &[Profile], connected_outputs: &[NiriOutput])
     }
 }
 
-pub fn remove_profile(profiles: &mut Vec<Profile>, profile_id: &str) -> bool {
-    let Some(index) = profiles.iter().position(|profile| profile.id == profile_id) else {
+pub fn remove_profile(profiles: &mut Vec<Profile>, index: usize) -> bool {
+    if index >= profiles.len() {
         return false;
-    };
+    }
     profiles.remove(index);
     true
 }
@@ -48,51 +47,6 @@ fn next_profile_priority(existing: &[Profile]) -> i32 {
         .max()
         .map(|priority| priority.saturating_add(1))
         .unwrap_or(0)
-}
-
-fn unique_profile_id(existing: &[Profile], base: &str) -> String {
-    let base = profile_id_from_name(base);
-    let ids = existing
-        .iter()
-        .map(|profile| profile.id.as_str())
-        .collect::<HashSet<_>>();
-    if !ids.contains(base.as_str()) {
-        return base;
-    }
-
-    for index in 2.. {
-        let candidate = format!("{base}-{index}");
-        if !ids.contains(candidate.as_str()) {
-            return candidate;
-        }
-    }
-
-    unreachable!("unbounded profile id search should always return")
-}
-
-fn profile_id_from_name(name: &str) -> String {
-    let mut id = String::new();
-    let mut last_was_separator = false;
-
-    for character in name.chars().flat_map(char::to_lowercase) {
-        if character.is_ascii_alphanumeric() {
-            id.push(character);
-            last_was_separator = false;
-        } else if !last_was_separator && !id.is_empty() {
-            id.push('-');
-            last_was_separator = true;
-        }
-    }
-
-    while id.ends_with('-') {
-        id.pop();
-    }
-
-    if id.is_empty() {
-        "profile".to_owned()
-    } else {
-        id
-    }
 }
 
 fn matcher_from_output(output: &NiriOutput) -> MonitorMatcher {
@@ -133,12 +87,11 @@ mod tests {
 
     #[test]
     fn new_profile_uses_next_name_priority_and_connected_outputs() {
-        let existing = vec![profile("profile-1", "Profile 1", 4)];
+        let existing = vec![profile("Profile 1", 4)];
         let output = output("DP-1", "Dell Inc. DELL 123", 0, 0);
 
         let profile = build_new_profile(&existing, &[output]);
 
-        assert_eq!(profile.id, "profile-2");
         assert_eq!(profile.name, "Profile 2");
         assert_eq!(profile.priority, 5);
         assert!(profile.condition.is_empty());
@@ -155,18 +108,18 @@ mod tests {
     }
 
     #[test]
-    fn remove_profile_deletes_matching_profile() {
-        let mut profiles = vec![profile("home", "Home", 0), profile("office", "Office", 1)];
+    fn remove_profile_deletes_profile_at_index() {
+        let mut profiles = vec![profile("Home", 0), profile("Office", 1)];
 
-        assert!(remove_profile(&mut profiles, "home"));
+        assert!(remove_profile(&mut profiles, 0));
+        assert!(!remove_profile(&mut profiles, 1));
 
         assert_eq!(profiles.len(), 1);
-        assert_eq!(profiles[0].id, "office");
+        assert_eq!(profiles[0].name, "Office");
     }
 
-    fn profile(id: &str, name: &str, priority: i32) -> Profile {
+    fn profile(name: &str, priority: i32) -> Profile {
         Profile {
-            id: id.to_owned(),
             name: name.to_owned(),
             priority,
             enabled: true,

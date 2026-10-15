@@ -1,6 +1,5 @@
 use crate::gui::daemon_client::DaemonConnectionState;
 use crate::gui::theme::{self, Tone};
-use crate::model::Profile;
 use eframe::egui::{self, RichText};
 
 /// What the header says about the daemon.
@@ -11,7 +10,7 @@ pub struct DaemonSummary {
     pub detail: String,
 }
 
-pub fn daemon_summary(state: &DaemonConnectionState, profiles: &[Profile]) -> DaemonSummary {
+pub fn daemon_summary(state: &DaemonConnectionState) -> DaemonSummary {
     let status = match state {
         DaemonConnectionState::Checking => {
             return DaemonSummary {
@@ -60,12 +59,7 @@ pub fn daemon_summary(state: &DaemonConnectionState, profiles: &[Profile]) -> Da
         )
     };
 
-    let active = status.selected_profile.as_deref().map(|profile_id| {
-        profiles
-            .iter()
-            .find(|profile| profile.id == profile_id)
-            .map_or(profile_id, |profile| profile.name.as_str())
-    });
+    let active = status.selected_profile.as_deref();
     let text = match active {
         Some(name) => format!("{mode} · {name}"),
         None => mode.to_owned(),
@@ -77,7 +71,7 @@ pub fn daemon_summary(state: &DaemonConnectionState, profiles: &[Profile]) -> Da
             text,
             detail: format!(
                 "Applying {} failed: {}",
-                last_apply.profile_id,
+                last_apply.profile,
                 last_apply.error.as_deref().unwrap_or("no details")
             ),
         };
@@ -145,11 +139,10 @@ mod tests {
     use super::*;
     use crate::control::StatusData;
     use crate::daemon::LastApply;
-    use crate::model::ProfileCondition;
 
     #[test]
     fn running_daemon_shows_mode_and_active_profile_name() {
-        let summary = daemon_summary(&running(status(true, Some("docked"))), &profiles());
+        let summary = daemon_summary(&running(status(true, Some("Docked"))));
 
         assert_eq!(summary.tone, Tone::Ok);
         assert_eq!(summary.text, "Automatic · Docked");
@@ -160,21 +153,21 @@ mod tests {
         let mut status = status(false, None);
         status.manual_layout = true;
 
-        let summary = daemon_summary(&running(status), &profiles());
+        let summary = daemon_summary(&running(status));
 
         assert_eq!(summary.text, "Manual layout");
     }
 
     #[test]
     fn failed_apply_is_an_error_with_its_reason() {
-        let mut status = status(true, Some("docked"));
+        let mut status = status(true, Some("Docked"));
         status.last_apply = Some(LastApply::failed(
-            "docked".to_owned(),
+            "Docked".to_owned(),
             Vec::new(),
             "mode 1920x1080 is not offered",
         ));
 
-        let summary = daemon_summary(&running(status), &profiles());
+        let summary = daemon_summary(&running(status));
 
         assert_eq!(summary.tone, Tone::Error);
         assert!(summary.detail.contains("mode 1920x1080 is not offered"));
@@ -182,12 +175,9 @@ mod tests {
 
     #[test]
     fn offline_daemon_explains_why() {
-        let summary = daemon_summary(
-            &DaemonConnectionState::Offline {
-                message: "socket not found".to_owned(),
-            },
-            &profiles(),
-        );
+        let summary = daemon_summary(&DaemonConnectionState::Offline {
+            message: "socket not found".to_owned(),
+        });
 
         assert_eq!(summary.tone, Tone::Warning);
         assert!(summary.detail.starts_with("socket not found"));
@@ -206,16 +196,5 @@ mod tests {
             outputs: Vec::new(),
             last_apply: None,
         }
-    }
-
-    fn profiles() -> Vec<Profile> {
-        vec![Profile {
-            id: "docked".to_owned(),
-            name: "Docked".to_owned(),
-            priority: 0,
-            enabled: true,
-            condition: ProfileCondition::default(),
-            outputs: Vec::new(),
-        }]
     }
 }

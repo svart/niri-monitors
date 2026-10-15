@@ -65,7 +65,7 @@ pub fn show_profiles(
                     (true, Some(false)) => (palette.text_weak, "does not match"),
                     (true, None) => (palette.text_weak, "monitors unknown"),
                 };
-                let is_active = active_profile == Some(profile.id.as_str());
+                let is_active = active_profile == Some(profile.name.as_str());
                 let response = row(
                     ui,
                     palette,

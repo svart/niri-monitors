@@ -40,7 +40,6 @@ impl Default for DaemonConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
-    pub id: String,
     pub name: String,
     #[serde(default)]
     pub priority: i32,

@@ -35,23 +35,23 @@ pub enum ConfigError {
     MissingConfigHome,
     #[error("unsupported config version {0}; supported version is {SUPPORTED_CONFIG_VERSION}")]
     UnsupportedVersion(u32),
-    #[error("profile id must be non-empty")]
-    EmptyProfileId,
-    #[error("duplicate profile id: {0}")]
-    DuplicateProfileId(String),
+    #[error("profile name must be non-empty")]
+    EmptyProfileName,
+    #[error("duplicate profile name: {0:?}")]
+    DuplicateProfileName(String),
     #[error(
-        "profile {profile_id} output {output_index} has invalid scale {scale}; scale must be finite and greater than zero"
+        "profile {profile:?} output {output_index} has invalid scale {scale}; scale must be finite and greater than zero"
     )]
     InvalidScale {
-        profile_id: String,
+        profile: String,
         output_index: usize,
         scale: f64,
     },
     #[error(
-        "profile {profile_id} {context} matcher {matcher_index} must set at least one match field"
+        "profile {profile:?} {context} matcher {matcher_index} must set at least one match field"
     )]
     EmptyMatcher {
-        profile_id: String,
+        profile: String,
         context: String,
         matcher_index: usize,
     },
@@ -203,14 +203,14 @@ pub fn validate_config(config: &Config) -> Result<(), ConfigError> {
         return Err(ConfigError::UnsupportedVersion(config.version));
     }
 
-    let mut profile_ids = HashSet::new();
+    let mut profile_names = HashSet::new();
     for profile in &config.profiles {
-        let id = profile.id.trim();
-        if id.is_empty() {
-            return Err(ConfigError::EmptyProfileId);
+        let name = profile.name.trim();
+        if name.is_empty() {
+            return Err(ConfigError::EmptyProfileName);
         }
-        if !profile_ids.insert(id) {
-            return Err(ConfigError::DuplicateProfileId(profile.id.clone()));
+        if !profile_names.insert(name) {
+            return Err(ConfigError::DuplicateProfileName(profile.name.clone()));
         }
 
         for (context, matchers) in [
@@ -222,18 +222,18 @@ pub fn validate_config(config: &Config) -> Result<(), ConfigError> {
             ),
         ] {
             for (matcher_index, matcher) in matchers.iter().enumerate() {
-                validate_matcher(&profile.id, context, matcher_index, matcher)?;
+                validate_matcher(&profile.name, context, matcher_index, matcher)?;
             }
         }
 
         for (output_index, output) in profile.outputs.iter().enumerate() {
-            validate_matcher(&profile.id, "outputs", output_index, &output.matcher)?;
+            validate_matcher(&profile.name, "outputs", output_index, &output.matcher)?;
 
             if let Some(scale) = output.scale
                 && (!scale.is_finite() || scale <= 0.0)
             {
                 return Err(ConfigError::InvalidScale {
-                    profile_id: profile.id.clone(),
+                    profile: profile.name.clone(),
                     output_index,
                     scale,
                 });
@@ -272,7 +272,7 @@ fn default_config_path_from_env(
 }
 
 fn validate_matcher(
-    profile_id: &str,
+    profile: &str,
     context: &str,
     matcher_index: usize,
     matcher: &MonitorMatcher,
@@ -281,7 +281,7 @@ fn validate_matcher(
         Ok(())
     } else {
         Err(ConfigError::EmptyMatcher {
-            profile_id: profile_id.to_owned(),
+            profile: profile.to_owned(),
             context: context.to_owned(),
             matcher_index,
         })
@@ -315,7 +315,6 @@ debounce_ms = 500
 prevent_disable_all = true
 
 [[profiles]]
-id = "home"
 name = "Home"
 priority = 100
 enabled = true
@@ -350,40 +349,37 @@ position = { x = 3440, y = 288 }
 
         assert_eq!(config.version, 1);
         assert_eq!(config.profiles.len(), 1);
-        assert_eq!(config.profiles[0].id, "home");
+        assert_eq!(config.profiles[0].name, "Home");
         assert_eq!(config.profiles[0].outputs.len(), 2);
     }
 
     #[test]
-    fn rejects_empty_profile_ids() {
+    fn rejects_empty_profile_names() {
         let config = r#"
 version = 1
 
 [[profiles]]
-id = "   "
-name = "Broken"
+name = "   "
 "#;
 
-        let error = parse_config(config, "bad.toml").expect_err("empty id should fail");
-        assert!(matches!(error, ConfigError::EmptyProfileId));
+        let error = parse_config(config, "bad.toml").expect_err("empty name should fail");
+        assert!(matches!(error, ConfigError::EmptyProfileName));
     }
 
     #[test]
-    fn rejects_duplicate_profile_ids() {
+    fn rejects_duplicate_profile_names() {
         let config = r#"
 version = 1
 
 [[profiles]]
-id = "home"
 name = "Home"
 
 [[profiles]]
-id = "home"
-name = "Duplicate"
+name = "Home "
 "#;
 
-        let error = parse_config(config, "bad.toml").expect_err("duplicate id should fail");
-        assert!(matches!(error, ConfigError::DuplicateProfileId(id) if id == "home"));
+        let error = parse_config(config, "bad.toml").expect_err("duplicate name should fail");
+        assert!(matches!(error, ConfigError::DuplicateProfileName(name) if name == "Home "));
     }
 
     #[test]
@@ -392,7 +388,6 @@ name = "Duplicate"
 version = 1
 
 [[profiles]]
-id = "home"
 name = "Home"
 
 [[profiles.outputs]]
@@ -410,7 +405,6 @@ scale = 0.0
 version = 1
 
 [[profiles]]
-id = "home"
 name = "Home"
 
 [[profiles.outputs]]
@@ -429,7 +423,6 @@ transform = "sideways"
 version = 1
 
 [[profiles]]
-id = "home"
 name = "Home"
 
 [[profiles.outputs]]
@@ -453,7 +446,6 @@ debounce_ms = 500
 prevent_disable_all = true
 
 [[profiles]]
-id = "home"
 name = "Home"
 priority = 100
 enabled = true
@@ -481,7 +473,6 @@ match = { make = "Lenovo Group Limited", model = "0x40A9" }
 enabled = false
 
 [[profiles]]
-id = "fallback"
 name = "Fallback"
 priority = 0
 enabled = true
@@ -508,29 +499,26 @@ enabled = true
         for (typo, config) in [
             ("versoin", "versoin = 1"),
             ("poll_interval", "version = 1\n[daemon]\npoll_interval = 10"),
-            (
-                "profile",
-                "version = 1\n[[profile]]\nid = \"a\"\nname = \"A\"",
-            ),
+            ("profile", "version = 1\n[[profile]]\nname = \"A\""),
             (
                 "priorty",
-                "version = 1\n[[profiles]]\nid = \"a\"\nname = \"A\"\npriorty = 1",
+                "version = 1\n[[profiles]]\nname = \"A\"\npriorty = 1",
             ),
             (
                 "all",
-                "version = 1\n[[profiles]]\nid = \"a\"\nname = \"A\"\n[profiles.condition]\nall = []",
+                "version = 1\n[[profiles]]\nname = \"A\"\n[profiles.condition]\nall = []",
             ),
             (
                 "desc",
-                "version = 1\n[[profiles]]\nid = \"a\"\nname = \"A\"\n[[profiles.outputs]]\nmatch = { desc = \"Dell\" }",
+                "version = 1\n[[profiles]]\nname = \"A\"\n[[profiles.outputs]]\nmatch = { desc = \"Dell\" }",
             ),
             (
                 "vr",
-                "version = 1\n[[profiles]]\nid = \"a\"\nname = \"A\"\n[[profiles.outputs]]\nmatch = { connector = \"DP-1\" }\nvr = true",
+                "version = 1\n[[profiles]]\nname = \"A\"\n[[profiles.outputs]]\nmatch = { connector = \"DP-1\" }\nvr = true",
             ),
             (
                 "z",
-                "version = 1\n[[profiles]]\nid = \"a\"\nname = \"A\"\n[[profiles.outputs]]\nmatch = { connector = \"DP-1\" }\nposition = { x = 0, y = 0, z = 0 }",
+                "version = 1\n[[profiles]]\nname = \"A\"\n[[profiles.outputs]]\nmatch = { connector = \"DP-1\" }\nposition = { x = 0, y = 0, z = 0 }",
             ),
         ] {
             let error = parse_config(config, "bad.toml").expect_err("unknown field should fail");
@@ -550,7 +538,6 @@ enabled = true
 version = 1
 
 [[profiles]]
-id = "home"
 name = "Home"
 
 [profiles.condition]
@@ -570,7 +557,6 @@ all_connected = [ {} ]
 version = 1
 
 [[profiles]]
-id = "home"
 name = "Home"
 
 [[profiles.outputs]]

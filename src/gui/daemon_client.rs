@@ -74,8 +74,8 @@ impl DaemonClient {
         self.request(ControlRequest::ReloadConfig)
     }
 
-    pub fn preview_profile(&self, profile_id: String) -> Result<PreviewData, DaemonClientError> {
-        self.request(ControlRequest::PreviewProfile { profile_id })
+    pub fn preview_profile(&self, profile: String) -> Result<PreviewData, DaemonClientError> {
+        self.request(ControlRequest::PreviewProfile { profile })
     }
 
     pub fn apply_manual_layout(
@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn decodes_preview_response() {
         let preview = PreviewData {
-            profile_id: "home".to_owned(),
+            profile: "home".to_owned(),
             actions: Vec::new(),
             warnings: vec!["check me".to_owned()],
             dry_run_output: "dry run".to_owned(),

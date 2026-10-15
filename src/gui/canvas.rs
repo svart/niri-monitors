@@ -825,7 +825,6 @@ mod tests {
     #[test]
     fn nudging_a_profile_output_starts_from_where_it_is_drawn() {
         let mut profile = Profile {
-            id: "home".to_string(),
             name: "Home".to_string(),
             priority: 0,
             enabled: true,

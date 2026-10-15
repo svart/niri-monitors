@@ -31,17 +31,17 @@ pub enum ControlRequest {
         enabled: bool,
     },
     ActivateProfile {
-        profile_id: String,
+        profile: String,
     },
     ApplyManualLayout {
         placements: Vec<ManualOutputPlacement>,
     },
     ClearManualProfile,
     PreviewProfile {
-        profile_id: String,
+        profile: String,
     },
     DryRunProfile {
-        profile_id: String,
+        profile: String,
     },
 }
 
@@ -111,7 +111,7 @@ pub struct StatusData {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PreviewData {
-    pub profile_id: String,
+    pub profile: String,
     pub actions: Vec<PlannedOutputAction>,
     pub warnings: Vec<String>,
     pub dry_run_output: String,
@@ -181,9 +181,7 @@ pub fn handle_control_request(
         ControlRequest::Status => ControlResponse::ok(status_data(state)),
         ControlRequest::ReloadConfig => reload_config(state, client, config_path),
         ControlRequest::SetAutoMode { enabled } => set_auto_mode(state, client, enabled),
-        ControlRequest::ActivateProfile { profile_id } => {
-            activate_profile(state, client, profile_id)
-        }
+        ControlRequest::ActivateProfile { profile } => activate_profile(state, client, profile),
         ControlRequest::ApplyManualLayout { placements } => {
             match apply_manual_layout(client, state, &placements) {
                 Ok(()) => ControlResponse::ok(status_data(state)),
@@ -191,9 +189,8 @@ pub fn handle_control_request(
             }
         }
         ControlRequest::ClearManualProfile => clear_manual_profile(state, client),
-        ControlRequest::PreviewProfile { profile_id }
-        | ControlRequest::DryRunProfile { profile_id } => {
-            preview_profile(state, client, &profile_id)
+        ControlRequest::PreviewProfile { profile } | ControlRequest::DryRunProfile { profile } => {
+            preview_profile(state, client, &profile)
         }
     }
 }
@@ -275,12 +272,12 @@ fn set_auto_mode(
 fn activate_profile(
     state: &mut DaemonState,
     client: &mut impl NiriClient,
-    profile_id: String,
+    name: String,
 ) -> ControlResponse {
-    let Some(profile) = find_profile(state, &profile_id).cloned() else {
+    let Some(profile) = find_profile(state, &name).cloned() else {
         return ControlResponse::error(
             ErrorCode::ProfileNotFound,
-            format!("profile not found: {profile_id}"),
+            format!("profile not found: {name:?}"),
         );
     };
 
@@ -291,11 +288,11 @@ fn activate_profile(
     if !profile_matches_outputs(&profile, &outputs) {
         return ControlResponse::error(
             ErrorCode::ProfileNotMatching,
-            format!("profile does not match connected outputs: {profile_id}"),
+            format!("profile does not match connected outputs: {name:?}"),
         );
     }
 
-    state.mode = Mode::ManualProfile(profile_id);
+    state.mode = Mode::ManualProfile(name);
     match reconcile_outputs_for_manual_apply(client, state, outputs) {
         Ok(_) => ControlResponse::ok(status_data(state)),
         Err(error) => error_from_daemon(error),
@@ -310,12 +307,12 @@ fn clear_manual_profile(state: &mut DaemonState, client: &mut impl NiriClient) -
 fn preview_profile(
     state: &mut DaemonState,
     client: &mut impl NiriClient,
-    profile_id: &str,
+    name: &str,
 ) -> ControlResponse {
-    let Some(profile) = find_profile(state, profile_id) else {
+    let Some(profile) = find_profile(state, name) else {
         return ControlResponse::error(
             ErrorCode::ProfileNotFound,
-            format!("profile not found: {profile_id}"),
+            format!("profile not found: {name:?}"),
         );
     };
 
@@ -325,7 +322,7 @@ fn preview_profile(
     };
     match build_apply_plan(&state.config, profile, &outputs) {
         Ok(plan) => ControlResponse::ok(PreviewData {
-            profile_id: plan.profile_id.clone(),
+            profile: plan.profile.clone(),
             actions: plan.actions.clone(),
             warnings: plan.warnings.clone(),
             dry_run_output: format_dry_run(&plan),
@@ -352,12 +349,12 @@ fn status_data(state: &DaemonState) -> StatusData {
     }
 }
 
-fn find_profile<'a>(state: &'a DaemonState, profile_id: &str) -> Option<&'a Profile> {
+fn find_profile<'a>(state: &'a DaemonState, name: &str) -> Option<&'a Profile> {
     state
         .config
         .profiles
         .iter()
-        .find(|profile| profile.id == profile_id)
+        .find(|profile| profile.name == name)
 }
 
 fn error_from_config(error: ConfigError) -> ControlResponse {
@@ -416,6 +413,25 @@ mod tests {
         let request: ControlRequest = serde_json::from_str(r#"{"type":"status"}"#).unwrap();
 
         assert_eq!(request, ControlRequest::Status);
+    }
+
+    #[test]
+    fn profile_requests_name_the_profile() {
+        let request: ControlRequest =
+            serde_json::from_str(r#"{"type":"activate_profile","profile":"Work Desk"}"#).unwrap();
+
+        assert_eq!(
+            request,
+            ControlRequest::ActivateProfile {
+                profile: "Work Desk".to_string()
+            }
+        );
+        assert!(
+            serde_json::from_str::<ControlRequest>(
+                r#"{"type":"preview_profile","profile_id":"x"}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -479,7 +495,7 @@ mod tests {
 
         let response = handle_control_request(
             ControlRequest::ActivateProfile {
-                profile_id: "home".to_string(),
+                profile: "home".to_string(),
             },
             &mut state,
             &mut client,
@@ -502,7 +518,7 @@ mod tests {
 
         let response = handle_control_request(
             ControlRequest::ActivateProfile {
-                profile_id: "home".to_string(),
+                profile: "home".to_string(),
             },
             &mut state,
             &mut client,
@@ -686,7 +702,7 @@ mod tests {
 
         let response = handle_control_request(
             ControlRequest::ActivateProfile {
-                profile_id: "missing".to_string(),
+                profile: "missing".to_string(),
             },
             &mut state,
             &mut client,
@@ -709,7 +725,7 @@ mod tests {
 
         let _ = fs::remove_file(path);
         assert!(response.ok);
-        assert_eq!(state.config.profiles[0].id, "office");
+        assert_eq!(state.config.profiles[0].name, "office");
     }
 
     #[test]
@@ -752,7 +768,7 @@ mod tests {
         let mut client = FakeClient::new(vec![output("DP-1")]);
         let activation = handle_control_request(
             ControlRequest::ActivateProfile {
-                profile_id: "home".to_string(),
+                profile: "home".to_string(),
             },
             &mut state,
             &mut client,
@@ -769,13 +785,12 @@ mod tests {
         assert_eq!(status["manual_profile"], serde_json::Value::Null);
     }
 
-    fn config(id: &str) -> Config {
+    fn config(name: &str) -> Config {
         Config {
             version: 1,
             daemon: DaemonConfig::default(),
             profiles: vec![Profile {
-                id: id.to_string(),
-                name: id.to_string(),
+                name: name.to_string(),
                 priority: 100,
                 enabled: true,
                 condition: ProfileCondition {
@@ -801,14 +816,13 @@ mod tests {
         }
     }
 
-    fn config_toml(id: &str) -> String {
+    fn config_toml(name: &str) -> String {
         format!(
             r#"
 version = 1
 
 [[profiles]]
-id = "{id}"
-name = "{id}"
+name = "{name}"
 priority = 100
 
 [profiles.condition]

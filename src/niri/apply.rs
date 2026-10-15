@@ -12,7 +12,7 @@ use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApplyPlan {
-    pub profile_id: String,
+    pub profile: String,
     pub actions: Vec<PlannedOutputAction>,
     pub warnings: Vec<String>,
 }
@@ -25,7 +25,7 @@ pub struct PlannedOutputAction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyExecutionReport {
-    pub profile_id: String,
+    pub profile: String,
     pub applied_actions: usize,
     pub warnings: Vec<String>,
 }
@@ -42,28 +42,24 @@ pub struct ApplyExecutionError {
 
 #[derive(Debug, Error)]
 pub enum ApplyPlanError {
-    #[error(
-        "profile {profile_id} output {output_index} matcher is ambiguous; matched: {matches:?}"
-    )]
+    #[error("profile {profile:?} output {output_index} matcher is ambiguous; matched: {matches:?}")]
     AmbiguousMatcher {
-        profile_id: String,
+        profile: String,
         output_index: usize,
         matches: Vec<String>,
     },
-    #[error("profile {profile_id} maps multiple output entries to connected output {output}")]
-    DuplicateOutputTarget { profile_id: String, output: String },
-    #[error(
-        "profile {profile_id} output {output} has mode {mode}, which the output does not offer"
-    )]
+    #[error("profile {profile:?} maps multiple output entries to connected output {output}")]
+    DuplicateOutputTarget { profile: String, output: String },
+    #[error("profile {profile:?} output {output} has mode {mode}, which the output does not offer")]
     UnavailableMode {
-        profile_id: String,
+        profile: String,
         output: String,
         mode: ModeSpec,
     },
-    #[error("refusing to disable every connected output for profile {0}")]
+    #[error("refusing to disable every connected output for profile {0:?}")]
     AllOutputsDisabled(String),
-    #[error("profile {profile_id} has overlapping output layout: {message}")]
-    OverlappingLayout { profile_id: String, message: String },
+    #[error("profile {profile:?} has overlapping output layout: {message}")]
+    OverlappingLayout { profile: String, message: String },
 }
 
 #[derive(Debug, Error)]
@@ -102,7 +98,7 @@ pub fn execute_apply_plan(
     }
 
     Ok(ApplyExecutionReport {
-        profile_id: plan.profile_id.clone(),
+        profile: plan.profile.clone(),
         applied_actions: plan.actions.len(),
         warnings: plan.warnings.clone(),
     })
@@ -110,14 +106,14 @@ pub fn execute_apply_plan(
 
 pub fn dry_run_apply_plan(plan: &ApplyPlan) -> ApplyExecutionReport {
     ApplyExecutionReport {
-        profile_id: plan.profile_id.clone(),
+        profile: plan.profile.clone(),
         applied_actions: 0,
         warnings: plan.warnings.clone(),
     }
 }
 
 pub fn format_dry_run(plan: &ApplyPlan) -> String {
-    let mut lines = vec![format!("profile: {}", plan.profile_id)];
+    let mut lines = vec![format!("profile: {}", plan.profile)];
 
     if !plan.warnings.is_empty() {
         lines.push("warnings:".to_string());
@@ -198,7 +194,7 @@ pub fn build_apply_plan(
 
         if std::mem::replace(&mut mentioned[index], true) {
             return Err(ApplyPlanError::DuplicateOutputTarget {
-                profile_id: profile.id.clone(),
+                profile: profile.name.clone(),
                 output: output.connector.clone(),
             });
         }
@@ -230,7 +226,7 @@ pub fn build_apply_plan(
         if let Some(mode) = profile_output.mode {
             if !output.modes.iter().any(|available| available.matches(mode)) {
                 return Err(ApplyPlanError::UnavailableMode {
-                    profile_id: profile.id.clone(),
+                    profile: profile.name.clone(),
                     output: output_name,
                     mode,
                 });
@@ -283,8 +279,8 @@ pub fn build_apply_plan(
     for (output, mentioned) in outputs.iter().zip(&mentioned) {
         if !mentioned {
             warnings.push(format!(
-                "connected output {} ({}) is not mentioned by profile {}",
-                output.connector, output.description, profile.id
+                "connected output {} ({}) is not mentioned by profile {:?}",
+                output.connector, output.description, profile.name
             ));
         }
     }
@@ -293,12 +289,12 @@ pub fn build_apply_plan(
         && !outputs.is_empty()
         && placements.iter().all(Option::is_none)
     {
-        return Err(ApplyPlanError::AllOutputsDisabled(profile.id.clone()));
+        return Err(ApplyPlanError::AllOutputsDisabled(profile.name.clone()));
     }
 
     let position_actions = plan_positions(outputs, &placements).map_err(|message| {
         ApplyPlanError::OverlappingLayout {
-            profile_id: profile.id.clone(),
+            profile: profile.name.clone(),
             message,
         }
     })?;
@@ -313,7 +309,7 @@ pub fn build_apply_plan(
     actions.extend(disable_actions);
 
     Ok(ApplyPlan {
-        profile_id: profile.id.clone(),
+        profile: profile.name.clone(),
         actions,
         warnings,
     })
@@ -404,7 +400,7 @@ pub fn build_manual_layout_plan(
     actions.extend(plan_positions(outputs, &layout).map_err(ManualLayoutError::Overlap)?);
 
     Ok(ApplyPlan {
-        profile_id: "manual-layout".to_owned(),
+        profile: "manual-layout".to_owned(),
         actions,
         warnings: Vec::new(),
     })
@@ -476,14 +472,14 @@ fn resolve_profile_output(
     match matches.as_slice() {
         [] => {
             warnings.push(format!(
-                "profile {} output {} did not match any connected output",
-                profile.id, output_index
+                "profile {:?} output {} did not match any connected output",
+                profile.name, output_index
             ));
             Ok(None)
         }
         [index] => Ok(Some(*index)),
         matches => Err(ApplyPlanError::AmbiguousMatcher {
-            profile_id: profile.id.clone(),
+            profile: profile.name.clone(),
             output_index,
             matches: matches
                 .iter()
@@ -532,7 +528,6 @@ mod tests {
     fn builds_apply_plan_in_safe_order() {
         let config = config(true);
         let profile = Profile {
-            id: "home".to_string(),
             name: "Home".to_string(),
             priority: 0,
             enabled: true,
@@ -856,7 +851,6 @@ mod tests {
     fn refuses_all_disabled_plan_by_default() {
         let config = config(true);
         let profile = Profile {
-            id: "off".to_string(),
             name: "Off".to_string(),
             priority: 0,
             enabled: true,
@@ -875,14 +869,13 @@ mod tests {
 
         let error = build_apply_plan(&config, &profile, &outputs).expect_err("plan should fail");
 
-        assert!(matches!(error, ApplyPlanError::AllOutputsDisabled(id) if id == "off"));
+        assert!(matches!(error, ApplyPlanError::AllOutputsDisabled(name) if name == "Off"));
     }
 
     #[test]
     fn rejects_unavailable_modes_before_planning_actions() {
         let config = config(true);
         let profile = Profile {
-            id: "bad".to_string(),
             name: "Bad".to_string(),
             priority: 0,
             enabled: true,
@@ -1038,7 +1031,6 @@ mod tests {
     fn rejects_overlapping_profile_layouts() {
         let config = config(true);
         let profile = Profile {
-            id: "bad-layout".to_string(),
             name: "Bad Layout".to_string(),
             priority: 0,
             enabled: true,
@@ -1075,7 +1067,6 @@ mod tests {
     fn normalizes_profile_positions_before_planning() {
         let config = config(true);
         let profile = Profile {
-            id: "normalized".to_string(),
             name: "Normalized".to_string(),
             priority: 0,
             enabled: true,
@@ -1117,7 +1108,7 @@ mod tests {
     #[test]
     fn executes_plan_actions_in_order() {
         let plan = ApplyPlan {
-            profile_id: "home".to_string(),
+            profile: "home".to_string(),
             actions: vec![
                 planned("DP-1".to_string(), OutputAction::Enable),
                 planned("DP-1".to_string(), OutputAction::Scale(1.25)),
@@ -1142,7 +1133,7 @@ mod tests {
     #[test]
     fn failed_action_stops_plan() {
         let plan = ApplyPlan {
-            profile_id: "home".to_string(),
+            profile: "home".to_string(),
             actions: vec![
                 planned("DP-1".to_string(), OutputAction::Enable),
                 planned("DP-2".to_string(), OutputAction::Disable),
@@ -1164,7 +1155,7 @@ mod tests {
     #[test]
     fn dry_run_formats_plan_without_applying() {
         let plan = ApplyPlan {
-            profile_id: "home".to_string(),
+            profile: "home".to_string(),
             actions: vec![
                 planned(
                     "DP-1".to_string(),
@@ -1204,7 +1195,6 @@ mod tests {
 
     fn profile_with_outputs(outputs: Vec<ProfileOutput>) -> Profile {
         Profile {
-            id: "home".to_string(),
             name: "Home".to_string(),
             priority: 0,
             enabled: true,

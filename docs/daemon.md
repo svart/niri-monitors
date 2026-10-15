@@ -96,10 +96,10 @@ Requests use a `type` field with snake_case names:
 | `status` | none | Return daemon status from memory. The request handler still requires `NIRI_SOCKET` to be set because it constructs a niri client before dispatching requests. |
 | `reload_config` | none | Load the saved config path, update runtime auto mode from `[daemon]`, then reconcile once. Missing or invalid saved config returns `CONFIG_RELOAD_FAILED`. |
 | `set_auto_mode` | `enabled: bool` | Enable or pause automatic profile loading. Enabling clears manual overrides and reconciles once. |
-| `activate_profile` | `profile_id: string` | Request a saved profile as the manual profile and reconcile once. The profile must exist and match current outputs; reconciliation only selects enabled profiles. |
+| `activate_profile` | `profile: string` (profile name) | Request a saved profile as the manual profile and reconcile once. The profile must exist and match current outputs; reconciliation only selects enabled profiles. |
 | `clear_manual_profile` | none | Clear manual profile/layout state, enable automatic loading, and reconcile once. |
-| `preview_profile` | `profile_id: string` | Build a plan for a saved profile and return actions, warnings, and dry-run text without applying. |
-| `dry_run_profile` | `profile_id: string` | Same response and behavior as `preview_profile`. |
+| `preview_profile` | `profile: string` (profile name) | Build a plan for a saved profile and return actions, warnings, and dry-run text without applying. |
+| `dry_run_profile` | `profile: string` (profile name) | Same response and behavior as `preview_profile`. |
 | `apply_manual_layout` | `placements: array` | Move connected enabled outputs and optionally change their mode, scale, and rotation, normalize the layout to top-left `0,0`, and switch to manual layout mode. |
 
 Example requests:
@@ -109,7 +109,7 @@ Example requests:
 ```
 
 ```json
-{"type":"activate_profile","profile_id":"home"}
+{"type":"activate_profile","profile":"Home"}
 ```
 
 ```json
@@ -133,13 +133,13 @@ Status data contains:
 | Field | Meaning |
 | --- | --- |
 | `auto_apply` | `true` in automatic mode. See Manual And Automatic Modes. |
-| `selected_profile` | Profile selected by the latest reconcile, if any. |
-| `manual_profile` | Profile id in manual profile mode, otherwise `null`. |
+| `selected_profile` | Name of the profile selected by the latest reconcile, if any. |
+| `manual_profile` | Profile name in manual profile mode, otherwise `null`. |
 | `manual_layout` | `true` in manual layout mode. |
 | `outputs` | Last daemon-observed niri outputs. |
-| `last_apply` | Result of the latest reconcile that selected a profile, with `profile_id`, `success`, `warnings`, and `error` when `success` is `false`. A reconcile with nothing to change counts as a success. |
+| `last_apply` | Result of the latest reconcile that selected a profile, with `profile` (the profile name), `success`, `warnings`, and `error` when `success` is `false`. A reconcile with nothing to change counts as a success. |
 
-Preview data contains `profile_id`, `actions`, `warnings`, and `dry_run_output`.
+Preview data contains `profile` (the profile name), `actions`, `warnings`, and `dry_run_output`.
 
 Error codes are serialized as `BAD_REQUEST`, `PROFILE_NOT_FOUND`, `PROFILE_NOT_MATCHING`, `CONFIG_RELOAD_FAILED`, `PLAN_FAILED`, `LAYOUT_OVERLAPS`, `APPLY_FAILED`, `NIRI_ERROR`, or `STATE_LOCK`.
 
@@ -151,7 +151,7 @@ The daemon is always in one of four modes:
 | --- | --- | --- |
 | Automatic | `auto_apply: true` | Selects the best matching profile and applies it. |
 | Paused | `auto_apply: false`, `manual_profile: null`, `manual_layout: false` | Selects the best matching profile but does not apply it. |
-| Manual profile | `manual_profile: "<id>"` | Like paused, but the manual profile is selected while it is enabled and matches connected outputs. Otherwise normal selection rules apply. The manual profile is applied once, when it is activated. |
+| Manual profile | `manual_profile: "<name>"` | Like paused, but the manual profile is selected while it is enabled and matches connected outputs. Otherwise normal selection rules apply. The manual profile is applied once, when it is activated. |
 | Manual layout | `manual_layout: true` | Does not select or apply profiles, so the next poll does not overwrite the layout. |
 
 Mode changes:

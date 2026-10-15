@@ -60,7 +60,7 @@ The pill turns red when the daemon's last apply failed; hover it for the error.
 
 ### Sidebar
 
-Each profile row shows a dot (green when the profile matches the connected monitors), its priority, whether it matches, and an `Active` badge on the profile the daemon has selected. Double-click a row to rename it; right-click for `Rename` and `Delete…`.
+Each profile row shows a dot (green when the profile matches the connected monitors), its priority, whether it matches, and an `Active` badge on the profile the daemon has selected. Double-click a row to rename it; right-click for `Rename` and `Delete…`. The name identifies the profile for the daemon, so it must be unique; a duplicate name shows a validation error and blocks `Save`. The daemon learns a new name when you save. Until then, the `Active` badge can disappear from a renamed profile.
 
 ### Canvas
 

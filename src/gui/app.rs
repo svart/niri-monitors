@@ -49,8 +49,8 @@ pub struct GuiApp {
     validation_error: Option<String>,
     load_error: Option<String>,
     preview_data: Option<PreviewData>,
-    selected_profile_id: Option<String>,
-    pending_delete_profile_id: Option<String>,
+    selected_index: Option<usize>,
+    pending_delete: Option<usize>,
     renaming_profile: bool,
     canvas: CanvasState,
     runtime_canvas: CanvasState,
@@ -93,7 +93,6 @@ impl GuiApp {
     fn from_loaded_config(config_path: PathBuf, config: Config) -> Self {
         Self {
             config_path: Some(config_path),
-            selected_profile_id: config.profiles.first().map(|profile| profile.id.clone()),
             validation_error: validate_config(&config)
                 .err()
                 .map(|error| error.to_string()),
@@ -199,12 +198,10 @@ impl GuiApp {
     }
 
     fn preview_selected_profile(&mut self) {
-        let Some(profile_id) = self.selected_profile().map(|profile| profile.id.clone()) else {
+        let Some(name) = self.selected_profile().map(|profile| profile.name.clone()) else {
             return;
         };
-        match DaemonClient::from_default_socket()
-            .and_then(|client| client.preview_profile(profile_id))
-        {
+        match DaemonClient::from_default_socket().and_then(|client| client.preview_profile(name)) {
             Ok(preview) => self.preview_data = Some(preview),
             Err(error) => self.toasts.error(format!("Preview failed: {error}")),
         }
@@ -274,19 +271,12 @@ impl GuiApp {
         self.manual_layout.reset();
     }
 
+    /// The selected profile, or the first one when nothing valid is selected.
     fn selected_profile_index(&self) -> Option<usize> {
-        let config = self.config.as_ref()?;
-
-        if let Some(selected_id) = self.selected_profile_id.as_deref()
-            && let Some(index) = config
-                .profiles
-                .iter()
-                .position(|profile| profile.id == selected_id)
-        {
-            return Some(index);
-        }
-
-        (!config.profiles.is_empty()).then_some(0)
+        let count = self.config.as_ref()?.profiles.len();
+        self.selected_index
+            .filter(|index| *index < count)
+            .or((count > 0).then_some(0))
     }
 
     fn selected_profile(&self) -> Option<&Profile> {
@@ -295,15 +285,15 @@ impl GuiApp {
     }
 
     fn select_profile(&mut self, index: usize) {
-        let Some(profile) = self
+        if self
             .config
             .as_ref()
-            .and_then(|config| config.profiles.get(index))
-        else {
+            .is_none_or(|config| index >= config.profiles.len())
+        {
             return;
-        };
-        if self.selected_profile_id.as_deref() != Some(profile.id.as_str()) {
-            self.selected_profile_id = Some(profile.id.clone());
+        }
+        if self.selected_profile_index() != Some(index) {
+            self.selected_index = Some(index);
             self.canvas.selected_output = None;
             self.preview_data = None;
         }
@@ -317,21 +307,21 @@ impl GuiApp {
         };
 
         let profile = build_new_profile(&config.profiles, &connected_outputs);
-        self.selected_profile_id = Some(profile.id.clone());
         config.profiles.push(profile);
+        self.selected_index = Some(config.profiles.len() - 1);
         self.canvas.selected_output = None;
         self.renaming_profile = true;
         self.mark_draft_changed();
     }
 
-    fn confirm_delete_profile(&mut self, profile_id: &str) {
-        self.pending_delete_profile_id = None;
+    fn confirm_delete_profile(&mut self, index: usize) {
+        self.pending_delete = None;
         let Some(config) = self.config.as_mut() else {
             return;
         };
 
-        if remove_profile(&mut config.profiles, profile_id) {
-            self.selected_profile_id = config.profiles.first().map(|profile| profile.id.clone());
+        if remove_profile(&mut config.profiles, index) {
+            self.selected_index = None;
             self.canvas.selected_output = None;
             self.renaming_profile = false;
             self.mark_draft_changed();
@@ -380,7 +370,7 @@ impl GuiApp {
         if ctx.input(|input| input.modifiers.ctrl && input.key_pressed(egui::Key::Q)) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
-        if ctx.wants_keyboard_input() || self.pending_delete_profile_id.is_some() {
+        if ctx.wants_keyboard_input() || self.pending_delete.is_some() {
             return;
         }
 
@@ -403,8 +393,7 @@ impl GuiApp {
             self.nudge_selected_output(delta);
         }
         if delete {
-            self.pending_delete_profile_id =
-                self.selected_profile().map(|profile| profile.id.clone());
+            self.pending_delete = self.selected_profile_index();
         }
     }
 
@@ -430,11 +419,7 @@ impl GuiApp {
     }
 
     fn show_header(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        let profiles = self
-            .config
-            .as_ref()
-            .map_or(&[][..], |config| config.profiles.as_slice());
-        let summary = daemon_summary(&self.daemon, profiles);
+        let summary = daemon_summary(&self.daemon);
         match show_header(
             ui,
             &summary,
@@ -501,12 +486,6 @@ impl GuiApp {
             active_profile.as_deref(),
             &connected_outputs,
         );
-        let profile_id =
-            |index: usize| config.profiles.get(index).map(|profile| profile.id.clone());
-        let delete_id = match action {
-            Some(SidebarAction::Delete(index)) => profile_id(index),
-            _ => None,
-        };
 
         if renamed {
             self.mark_draft_changed();
@@ -518,7 +497,7 @@ impl GuiApp {
                 self.renaming_profile = true;
             }
             Some(SidebarAction::FinishRename) => self.renaming_profile = false,
-            Some(SidebarAction::Delete(_)) => self.pending_delete_profile_id = delete_id,
+            Some(SidebarAction::Delete(index)) => self.pending_delete = Some(index),
             Some(SidebarAction::New) => self.create_profile(),
             None => {}
         }
@@ -593,7 +572,7 @@ impl GuiApp {
             if let Some(preview) = self
                 .preview_data
                 .as_ref()
-                .filter(|preview| preview.profile_id == profile.id)
+                .filter(|preview| preview.profile == profile.name)
             {
                 ui.add_space(4.0);
                 for warning in &preview.warnings {
@@ -679,19 +658,18 @@ impl GuiApp {
     }
 
     fn show_delete_dialog(&mut self, ctx: &egui::Context) {
-        let Some(profile_id) = self.pending_delete_profile_id.clone() else {
+        let Some(index) = self.pending_delete else {
             return;
         };
-        let profile_name = self
+        let Some(profile_name) = self
             .config
             .as_ref()
-            .and_then(|config| {
-                config
-                    .profiles
-                    .iter()
-                    .find(|profile| profile.id == profile_id)
-            })
-            .map_or_else(|| profile_id.clone(), |profile| profile.name.clone());
+            .and_then(|config| config.profiles.get(index))
+            .map(|profile| profile.name.clone())
+        else {
+            self.pending_delete = None;
+            return;
+        };
 
         let mut confirmed = false;
         let mut cancelled = false;
@@ -718,9 +696,9 @@ impl GuiApp {
         });
 
         if confirmed {
-            self.confirm_delete_profile(&profile_id);
+            self.confirm_delete_profile(index);
         } else if cancelled || modal.should_close() {
-            self.pending_delete_profile_id = None;
+            self.pending_delete = None;
         }
     }
 }
@@ -821,7 +799,6 @@ mod tests {
         let original_config = empty_config();
         let mut edited_config = empty_config();
         edited_config.profiles.push(Profile {
-            id: "home".to_owned(),
             name: "Home".to_owned(),
             priority: 0,
             enabled: true,

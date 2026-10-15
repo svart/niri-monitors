@@ -59,7 +59,7 @@ pub fn select_profile<'a>(
 ) -> Option<&'a Profile> {
     if let Some(manual_profile) = manual_profile
         && let Some(profile) = config.profiles.iter().find(|profile| {
-            profile.id == manual_profile
+            profile.name == manual_profile
                 && profile.enabled
                 && profile_matches_outputs(profile, outputs)
         })
@@ -183,7 +183,7 @@ mod tests {
 
         let selected = select_profile(&config, &outputs, None).expect("profile should match");
 
-        assert_eq!(selected.id, "home");
+        assert_eq!(selected.name, "home");
     }
 
     #[test]
@@ -208,7 +208,7 @@ mod tests {
 
         let selected = select_profile(&config, &outputs, None).expect("profile should match");
 
-        assert_eq!(selected.id, "specific");
+        assert_eq!(selected.name, "specific");
 
         let tied_config = Config {
             profiles: config.profiles[..2].to_vec(),
@@ -216,7 +216,7 @@ mod tests {
         };
         let selected = select_profile(&tied_config, &outputs, None).expect("profile should match");
 
-        assert_eq!(selected.id, "first");
+        assert_eq!(selected.name, "first");
     }
 
     #[test]
@@ -264,7 +264,7 @@ mod tests {
         };
         let selected = select_profile(&config, &outputs, None).expect("profile should match");
 
-        assert_eq!(selected.id, "implicit");
+        assert_eq!(selected.name, "implicit");
     }
 
     fn output_entry(description: &str) -> ProfileOutput {
@@ -279,10 +279,9 @@ mod tests {
         }
     }
 
-    fn profile(id: &str, priority: i32, condition: ProfileCondition) -> Profile {
+    fn profile(name: &str, priority: i32, condition: ProfileCondition) -> Profile {
         Profile {
-            id: id.to_string(),
-            name: id.to_string(),
+            name: name.to_string(),
             priority,
             enabled: true,
             condition,

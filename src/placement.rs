@@ -600,7 +600,6 @@ mod tests {
 
     fn profile_with_output(output: ProfileOutput) -> Profile {
         Profile {
-            id: "profile".to_owned(),
             name: "Profile".to_owned(),
             priority: 0,
             enabled: true,

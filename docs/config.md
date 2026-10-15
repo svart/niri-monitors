@@ -40,7 +40,6 @@ debounce_ms = 500
 prevent_disable_all = true
 
 [[profiles]]
-id = "home"
 name = "Home"
 priority = 100
 enabled = true
@@ -82,8 +81,7 @@ Profiles are declared with `[[profiles]]`. The list is optional; an empty list m
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `id` | string | required | Stable unique profile id. Must not be empty. |
-| `name` | string | required | Human-readable profile name shown by the GUI and daemon status. |
+| `name` | string | required | Unique profile name. Must not be empty. The GUI, daemon status, and control socket identify the profile by this name. |
 | `priority` | integer | `0` | Higher priority wins when multiple profiles match. |
 | `enabled` | boolean | `true` | Disabled profiles are ignored. |
 | `condition` | table | empty | Extra match rules for automatic profile selection. The output entries are already required. |
@@ -202,7 +200,7 @@ The config loader rejects:
 
 - Unknown fields, for example a misspelled key such as `postion = { x = 0, y = 0 }` or `[[profile]]`.
 - Unsupported `version` values.
-- Empty or duplicate profile ids.
+- Empty or duplicate profile names. Names are compared with surrounding whitespace removed.
 - Empty monitor matchers.
 - Non-positive or non-finite scale values.
 - Unknown transform strings.

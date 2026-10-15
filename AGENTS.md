@@ -72,6 +72,8 @@ Manual layout behavior remains runtime-only in the daemon/control protocol. The 
 
 Profile selection is deterministic: manual profile if enabled and matching, otherwise enabled matching profile by priority, specificity, then config order. A profile matches only when every output entry's `match` matches a connected output and its `condition` holds; output matchers count as required monitors for specificity. The GUI does not copy output matchers into `all_connected`.
 
+Profiles are identified by `name`; there is no separate id. Names must be non-empty and unique after trimming. Control requests take a `profile` name, and status `selected_profile`, `manual_profile`, and `last_apply.profile` carry names. The GUI tracks the selected profile by index, so a rename does not move the selection.
+
 Config structs use `#[serde(deny_unknown_fields)]`, so a misspelled key is a load error. The saved TOML layout comes from `config_to_toml` in `src/config.rs` and is pinned by a golden test. GUI saves do not keep comments.
 
 ## Pre-Commit Gate

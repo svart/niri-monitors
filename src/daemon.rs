@@ -41,7 +41,7 @@ impl Mode {
 
     pub fn manual_profile(&self) -> Option<&str> {
         match self {
-            Self::ManualProfile(profile_id) => Some(profile_id),
+            Self::ManualProfile(profile) => Some(profile),
             Self::Auto | Self::Paused | Self::ManualLayout => None,
         }
     }
@@ -84,7 +84,7 @@ impl DaemonState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LastApply {
-    pub profile_id: String,
+    pub profile: String,
     pub success: bool,
     pub warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -92,18 +92,18 @@ pub struct LastApply {
 }
 
 impl LastApply {
-    pub fn succeeded(profile_id: String, warnings: Vec<String>) -> Self {
+    pub fn succeeded(profile: String, warnings: Vec<String>) -> Self {
         Self {
-            profile_id,
+            profile,
             success: true,
             warnings,
             error: None,
         }
     }
 
-    pub fn failed(profile_id: String, warnings: Vec<String>, error: impl Display) -> Self {
+    pub fn failed(profile: String, warnings: Vec<String>, error: impl Display) -> Self {
         Self {
-            profile_id,
+            profile,
             success: false,
             warnings,
             error: Some(error.to_string()),
@@ -113,7 +113,7 @@ impl LastApply {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReconcileOutcome {
-    pub profile_id: Option<String>,
+    pub profile: Option<String>,
     pub applied: bool,
     pub dry_run: bool,
     pub skipped: bool,
@@ -175,7 +175,7 @@ fn reconcile_outputs_with(
         state.selected_profile = None;
         debug!("manual layout active; skipping profile selection");
         return Ok(ReconcileOutcome {
-            profile_id: None,
+            profile: None,
             applied: false,
             dry_run,
             skipped: true,
@@ -189,7 +189,7 @@ fn reconcile_outputs_with(
         state.selected_profile = None;
         debug!("no matching monitor profile");
         return Ok(ReconcileOutcome {
-            profile_id: None,
+            profile: None,
             applied: false,
             dry_run,
             skipped: false,
@@ -198,11 +198,11 @@ fn reconcile_outputs_with(
         });
     };
 
-    state.selected_profile = Some(profile.id.clone());
+    state.selected_profile = Some(profile.name.clone());
     let plan = match build_apply_plan(&state.config, profile, &state.outputs) {
         Ok(plan) => plan,
         Err(error) => {
-            state.last_apply = Some(LastApply::failed(profile.id.clone(), Vec::new(), &error));
+            state.last_apply = Some(LastApply::failed(profile.name.clone(), Vec::new(), &error));
             return Err(error.into());
         }
     };
@@ -211,9 +211,9 @@ fn reconcile_outputs_with(
     if dry_run {
         let report = dry_run_apply_plan(&plan);
         let dry_run_output = format_dry_run(&plan);
-        state.last_apply = Some(LastApply::succeeded(report.profile_id, report.warnings));
+        state.last_apply = Some(LastApply::succeeded(report.profile, report.warnings));
         return Ok(ReconcileOutcome {
-            profile_id: Some(plan.profile_id),
+            profile: Some(plan.profile),
             applied: false,
             dry_run: true,
             skipped: false,
@@ -223,9 +223,9 @@ fn reconcile_outputs_with(
     }
 
     if state.mode != Mode::Auto && !force_apply {
-        info!(profile_id = %plan.profile_id, "automatic loading paused; selected profile only");
+        info!(profile = %plan.profile, "automatic loading paused; selected profile only");
         return Ok(ReconcileOutcome {
-            profile_id: Some(plan.profile_id),
+            profile: Some(plan.profile),
             applied: false,
             dry_run: false,
             skipped: true,
@@ -235,13 +235,10 @@ fn reconcile_outputs_with(
     }
 
     if plan.actions.is_empty() {
-        debug!(profile_id = %plan.profile_id, "outputs already match profile");
-        state.last_apply = Some(LastApply::succeeded(
-            plan.profile_id.clone(),
-            warnings.clone(),
-        ));
+        debug!(profile = %plan.profile, "outputs already match profile");
+        state.last_apply = Some(LastApply::succeeded(plan.profile.clone(), warnings.clone()));
         return Ok(ReconcileOutcome {
-            profile_id: Some(plan.profile_id),
+            profile: Some(plan.profile),
             applied: false,
             dry_run: false,
             skipped: true,
@@ -251,9 +248,9 @@ fn reconcile_outputs_with(
     }
 
     let report = execute_and_record(client, state, &plan)?;
-    info!(profile_id = %report.profile_id, actions = report.applied_actions, "applied monitor profile");
+    info!(profile = %report.profile, actions = report.applied_actions, "applied monitor profile");
     Ok(ReconcileOutcome {
-        profile_id: Some(report.profile_id),
+        profile: Some(report.profile),
         applied: true,
         dry_run: false,
         skipped: false,
@@ -288,7 +285,7 @@ fn execute_and_record(
     match execute_apply_plan(client, plan) {
         Ok(report) => {
             state.last_apply = Some(LastApply::succeeded(
-                report.profile_id.clone(),
+                report.profile.clone(),
                 report.warnings.clone(),
             ));
             // Keep what niri reports after the apply, so the poll loop does not
@@ -298,7 +295,7 @@ fn execute_and_record(
         }
         Err(error) => {
             state.last_apply = Some(LastApply::failed(
-                plan.profile_id.clone(),
+                plan.profile.clone(),
                 plan.warnings.clone(),
                 &error,
             ));
@@ -392,7 +389,7 @@ mod tests {
         let outcome =
             reconcile_once(&mut client, &mut state, false).expect("reconcile should pass");
 
-        assert_eq!(outcome.profile_id.as_deref(), Some("home"));
+        assert_eq!(outcome.profile.as_deref(), Some("Home"));
         assert!(outcome.applied);
         assert_eq!(
             client.actions,
@@ -436,7 +433,7 @@ mod tests {
         let outcome = reconcile_once(&mut client, &mut state, true).expect("dry run should pass");
 
         assert!(!outcome.applied);
-        assert!(outcome.dry_run_output.unwrap().contains("profile: home"));
+        assert!(outcome.dry_run_output.unwrap().contains("profile: Home"));
         assert!(client.actions.is_empty());
     }
 
@@ -475,7 +472,7 @@ mod tests {
             reconcile_once(&mut client, &mut state, false).expect("reconcile should pass");
 
         assert!(outcome.skipped);
-        assert_eq!(state.selected_profile.as_deref(), Some("home"));
+        assert_eq!(state.selected_profile.as_deref(), Some("Home"));
         assert!(client.actions.is_empty());
     }
 
@@ -514,7 +511,7 @@ mod tests {
         poll_once(&mut client, &state, false, &mut |_| {}).expect("plan errors should not stop");
 
         let last_apply = state.lock().unwrap().last_apply.clone().unwrap();
-        assert_eq!(last_apply.profile_id, "home");
+        assert_eq!(last_apply.profile, "Home");
         assert!(!last_apply.success);
         assert!(last_apply.error.unwrap().contains("1920x1080@60"));
         assert!(client.actions.is_empty());
@@ -563,7 +560,6 @@ mod tests {
             version: 1,
             daemon: DaemonConfig::default(),
             profiles: vec![Profile {
-                id: "home".to_string(),
                 name: "Home".to_string(),
                 priority: 100,
                 enabled: true,
