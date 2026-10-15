@@ -72,9 +72,13 @@ Install with the `Makefile` to get both binaries, a desktop entry for app launch
 ```sh
 make            # cargo build --release --locked
 make install    # PREFIX=~/.local, no root needed
+systemctl --user daemon-reload
+systemctl --user enable --now niri-monitorsd.service
 ```
 
-To install for all users, set the prefix and use sudo. `make install` does not build, so cargo does not run as root:
+`make install` does not build, so run `make` first. It also does not enable the daemon. The `systemctl` commands start it now and, through `graphical-session.target`, with each later niri session. See `docs/daemon.md` for logs and environment troubleshooting.
+
+To install for all users, set the prefix and use sudo. Because `make install` does not build, cargo does not run as root:
 
 ```sh
 sudo make install PREFIX=/usr/local
