@@ -4,6 +4,7 @@ use std::str::FromStr;
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub version: u32,
     #[serde(default)]
@@ -13,6 +14,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DaemonConfig {
     #[serde(default = "default_auto_apply")]
     pub auto_apply: bool,
@@ -36,6 +38,7 @@ impl Default for DaemonConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Profile {
     pub id: String,
     pub name: String,
@@ -50,6 +53,7 @@ pub struct Profile {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProfileCondition {
     #[serde(default)]
     pub all_connected: Vec<MonitorMatcher>,
@@ -60,6 +64,7 @@ pub struct ProfileCondition {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MonitorMatcher {
     #[serde(default)]
     pub connector: Option<String>,
@@ -74,6 +79,7 @@ pub struct MonitorMatcher {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProfileOutput {
     #[serde(rename = "match")]
     pub matcher: MonitorMatcher,
@@ -92,6 +98,7 @@ pub struct ProfileOutput {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Position {
     pub x: i32,
     pub y: i32,

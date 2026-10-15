@@ -391,6 +391,47 @@ mode = "3440x1440@60Hz"
     }
 
     #[test]
+    fn rejects_unknown_fields() {
+        for (typo, config) in [
+            ("versoin", "versoin = 1"),
+            ("poll_interval", "version = 1\n[daemon]\npoll_interval = 10"),
+            (
+                "profile",
+                "version = 1\n[[profile]]\nid = \"a\"\nname = \"A\"",
+            ),
+            (
+                "priorty",
+                "version = 1\n[[profiles]]\nid = \"a\"\nname = \"A\"\npriorty = 1",
+            ),
+            (
+                "all",
+                "version = 1\n[[profiles]]\nid = \"a\"\nname = \"A\"\n[profiles.condition]\nall = []",
+            ),
+            (
+                "desc",
+                "version = 1\n[[profiles]]\nid = \"a\"\nname = \"A\"\n[[profiles.outputs]]\nmatch = { desc = \"Dell\" }",
+            ),
+            (
+                "vr",
+                "version = 1\n[[profiles]]\nid = \"a\"\nname = \"A\"\n[[profiles.outputs]]\nmatch = { connector = \"DP-1\" }\nvr = true",
+            ),
+            (
+                "z",
+                "version = 1\n[[profiles]]\nid = \"a\"\nname = \"A\"\n[[profiles.outputs]]\nmatch = { connector = \"DP-1\" }\nposition = { x = 0, y = 0, z = 0 }",
+            ),
+        ] {
+            let error = parse_config(config, "bad.toml").expect_err("unknown field should fail");
+            assert!(
+                matches!(error, ConfigError::Parse { .. })
+                    && error
+                        .to_string()
+                        .contains(&format!("unknown field `{typo}`")),
+                "{typo:?} should be reported, got: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_empty_condition_matchers() {
         let config = r#"
 version = 1

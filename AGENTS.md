@@ -72,6 +72,8 @@ Manual layout behavior remains runtime-only in the daemon/control protocol. The 
 
 Profile selection is deterministic: manual profile if enabled and matching, otherwise enabled matching profile by priority, specificity, then config order.
 
+Config structs use `#[serde(deny_unknown_fields)]`, so a misspelled key is a load error.
+
 ## Pre-Commit Gate
 
 Before committing any tangible change, run all of:

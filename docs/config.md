@@ -200,6 +200,7 @@ An output that the profile enables gets every configured setting, because its pr
 
 The config loader rejects:
 
+- Unknown fields, for example a misspelled key such as `postion = { x = 0, y = 0 }` or `[[profile]]`.
 - Unsupported `version` values.
 - Empty or duplicate profile ids.
 - Empty monitor matchers.
