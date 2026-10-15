@@ -60,7 +60,7 @@ The pill turns red when the daemon's last apply failed; hover it for the error.
 
 ### Sidebar
 
-Each profile row shows a dot (green when the profile matches the connected monitors), its priority, whether it matches, and an `Active` badge on the profile the daemon has selected. Double-click a row to rename it; right-click for `Rename` and `Delete…`. Until a profile is saved for the first time, renaming it also changes its `id` to match the name. After that the id stays the same, because the daemon and the control socket refer to profiles by id.
+Each profile row shows a dot (green when the profile matches the connected monitors), its priority, whether it matches, and an `Active` badge on the profile the daemon has selected. Double-click a row to rename it; right-click for `Rename` and `Delete…`.
 
 ### Canvas
 

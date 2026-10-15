@@ -12,7 +12,7 @@ use crate::gui::inspector::{
     LiveLayoutAction, LiveLayoutStatus, show_live_layout, show_output_settings,
 };
 use crate::gui::poller::Poller;
-use crate::gui::profile_list::{build_new_profile, rederive_profile_id, remove_profile};
+use crate::gui::profile_list::{build_new_profile, remove_profile};
 use crate::gui::sidebar::{self, SidebarAction};
 use crate::gui::theme;
 use crate::gui::toast::Toasts;
@@ -509,14 +509,6 @@ impl GuiApp {
         };
 
         if renamed {
-            let saved = self.original_config.as_ref().is_some_and(|saved| {
-                let id = &config.profiles[profile_index].id;
-                saved.profiles.iter().any(|profile| &profile.id == id)
-            });
-            if !saved {
-                rederive_profile_id(&mut config.profiles, profile_index);
-                self.selected_profile_id = Some(config.profiles[profile_index].id.clone());
-            }
             self.mark_draft_changed();
         }
         match action {
