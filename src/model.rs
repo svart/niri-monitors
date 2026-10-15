@@ -46,21 +46,29 @@ pub struct Profile {
     pub priority: i32,
     #[serde(default = "default_profile_enabled")]
     pub enabled: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "ProfileCondition::is_empty")]
     pub condition: ProfileCondition,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outputs: Vec<ProfileOutput>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProfileCondition {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub all_connected: Vec<MonitorMatcher>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub any_connected: Vec<MonitorMatcher>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub none_connected: Vec<MonitorMatcher>,
+}
+
+impl ProfileCondition {
+    pub fn is_empty(&self) -> bool {
+        self.all_connected.is_empty()
+            && self.any_connected.is_empty()
+            && self.none_connected.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

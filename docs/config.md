@@ -235,6 +235,8 @@ cargo run --bin niri-monitorsd -- --dry-run --once
 
 `niri-monitors-gui` saves with validation. If the target file already exists, it first copies the old file to the same directory with `.bak` appended to the filename, for example `config.toml.bak`.
 
+A save rewrites the whole file from the GUI's in-memory config. Comments, key order, and other hand formatting are not kept; the `.bak` file still has them. The saved file uses the layout shown in this document: matchers and positions as inline tables, one matcher per line, and no empty condition arrays.
+
 When the daemon is running, the GUI asks it to reload the saved config after a successful save. `Preview plan` is disabled while the GUI has unsaved changes because the daemon only reads the file on disk.
 
 ## Agent Reference
@@ -242,7 +244,7 @@ When the daemon is running, the GUI asks it to reload the saved config after a s
 Source-of-truth implementation points:
 
 - Data model and TOML field names: `src/model.rs`.
-- Config path resolution, missing/empty config handling, backups, and validation: `src/config.rs`.
+- Config path resolution, missing/empty config handling, saved TOML layout, backups, and validation: `src/config.rs`.
 - Matcher semantics and profile ordering: `src/matching.rs`.
 - Apply-plan validation, action ordering, warnings, and dry-run text: `src/niri/apply.rs`.
 - Runtime manual/automatic selection behavior: `src/daemon.rs` and `src/control.rs`.

@@ -5,6 +5,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+use toml_edit::{ArrayOfTables, InlineTable, Item, Table, Value};
 
 pub const SUPPORTED_CONFIG_VERSION: u32 = 1;
 
@@ -29,7 +30,7 @@ pub enum ConfigError {
         source: toml::de::Error,
     },
     #[error("failed to encode config: {0}")]
-    Encode(#[from] toml::ser::Error),
+    Encode(#[from] toml_edit::ser::Error),
     #[error("could not resolve config path: set XDG_CONFIG_HOME or HOME")]
     MissingConfigHome,
     #[error("unsupported config version {0}; supported version is {SUPPORTED_CONFIG_VERSION}")]
@@ -103,7 +104,7 @@ pub fn save_config(path: impl AsRef<Path>, config: &Config) -> Result<(), Config
         })?;
     }
 
-    let contents = toml::to_string_pretty(config)?;
+    let contents = config_to_toml(config)?;
     fs::write(path, contents).map_err(|source| ConfigError::Write {
         path: path.to_path_buf(),
         source,
@@ -123,6 +124,68 @@ pub fn save_config_with_backup(path: impl AsRef<Path>, config: &Config) -> Resul
     }
 
     save_config(path, config)
+}
+
+/// Writes the config in the layout `docs/config.md` shows: sections, profiles,
+/// conditions, and output entries as tables; matchers and positions inline, with one
+/// matcher per line.
+fn config_to_toml(config: &Config) -> Result<String, ConfigError> {
+    let mut document = toml_edit::ser::to_document(config)?;
+    for (_, item) in document.iter_mut() {
+        layout_item(item, true);
+    }
+    Ok(document.to_string())
+}
+
+/// The serializer writes every nested value inline. A table becomes a standard table
+/// when it is at the top level or holds other tables, and a list of such tables becomes
+/// an array of tables. Other lists of values get one value per line.
+fn layout_item(item: &mut Item, top_level: bool) {
+    let expand = |table: &InlineTable| {
+        top_level
+            || table.iter().any(|(_, value)| match value {
+                Value::InlineTable(_) => true,
+                Value::Array(array) => array.iter().any(Value::is_inline_table),
+                _ => false,
+            })
+    };
+
+    *item = match std::mem::take(item) {
+        Item::Value(Value::InlineTable(table)) if expand(&table) => {
+            Item::Table(expand_table(table))
+        }
+        Item::Value(Value::Array(array))
+            if !array.is_empty()
+                && array
+                    .iter()
+                    .all(|value| value.as_inline_table().is_some_and(expand)) =>
+        {
+            let mut tables = ArrayOfTables::new();
+            for value in array {
+                if let Value::InlineTable(table) = value {
+                    tables.push(expand_table(table));
+                }
+            }
+            Item::ArrayOfTables(tables)
+        }
+        Item::Value(Value::Array(mut array)) if !array.is_empty() => {
+            for value in array.iter_mut() {
+                value.decor_mut().set_prefix("\n  ");
+            }
+            array.set_trailing("\n");
+            array.set_trailing_comma(true);
+            Item::Value(Value::Array(array))
+        }
+        other => other,
+    };
+}
+
+fn expand_table(table: InlineTable) -> Table {
+    let mut table = table.into_table();
+    for (_, item) in table.iter_mut() {
+        layout_item(item, false);
+    }
+    table
 }
 
 pub fn parse_config(contents: &str, path: impl AsRef<Path>) -> Result<Config, ConfigError> {
@@ -380,11 +443,61 @@ mode = "3440x1440@60Hz"
     }
 
     #[test]
+    fn saves_in_documented_layout() {
+        let config = r#"version = 1
+
+[daemon]
+auto_apply = true
+poll_interval_ms = 1500
+debounce_ms = 500
+prevent_disable_all = true
+
+[[profiles]]
+id = "home"
+name = "Home"
+priority = 100
+enabled = true
+
+[profiles.condition]
+any_connected = [
+  { connector = "DP-1" },
+  { connector = "HDMI-A-1" },
+]
+none_connected = [
+  { description = "Projector Vendor PROJECTOR Unknown" },
+]
+
+[[profiles.outputs]]
+match = { description = "Dell Inc. DELL U3419W 7VK66T2" }
+enabled = true
+mode = "3440x1440@59.973"
+scale = 1.0
+transform = "normal"
+position = { x = 0, y = 0 }
+vrr = false
+
+[[profiles.outputs]]
+match = { make = "Lenovo Group Limited", model = "0x40A9" }
+enabled = false
+
+[[profiles]]
+id = "fallback"
+name = "Fallback"
+priority = 0
+enabled = true
+"#;
+
+        let parsed = parse_config(config, "example.toml").expect("config should parse");
+
+        assert_eq!(config_to_toml(&parsed).unwrap(), config);
+    }
+
+    #[test]
     fn saves_mode_and_transform_in_config_spelling() {
         let mut config = parse_config(EXAMPLE_CONFIG, "example.toml").unwrap();
         config.profiles[0].outputs[1].transform = Some(crate::model::Transform::Flipped90);
 
-        let saved = toml::to_string_pretty(&config).unwrap();
+        let saved = config_to_toml(&config).unwrap();
 
         assert!(saved.contains(r#"mode = "3440x1440@59.973""#));
         assert!(saved.contains(r#"transform = "flipped-90""#));

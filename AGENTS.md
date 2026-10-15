@@ -72,7 +72,7 @@ Manual layout behavior remains runtime-only in the daemon/control protocol. The 
 
 Profile selection is deterministic: manual profile if enabled and matching, otherwise enabled matching profile by priority, specificity, then config order.
 
-Config structs use `#[serde(deny_unknown_fields)]`, so a misspelled key is a load error.
+Config structs use `#[serde(deny_unknown_fields)]`, so a misspelled key is a load error. The saved TOML layout comes from `config_to_toml` in `src/config.rs` and is pinned by a golden test. GUI saves do not keep comments.
 
 ## Pre-Commit Gate
 
@@ -124,7 +124,7 @@ Use these files as source-of-truth anchors before changing docs or behavior:
 
 | Concern | Source files |
 | --- | --- |
-| Config schema, defaults, validation, save backup | `src/model.rs`, `src/config.rs` |
+| Config schema, defaults, validation, saved TOML layout, save backup | `src/model.rs`, `src/config.rs` |
 | Matcher semantics and deterministic selection | `src/matching.rs` |
 | Daemon reconcile loop, dry-run, error handling | `src/daemon.rs` |
 | Control socket JSON protocol and stable error codes | `src/control.rs`, `src/gui/daemon_client.rs` |
