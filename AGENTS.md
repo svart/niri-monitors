@@ -70,7 +70,7 @@ Daemon and GUI startup tolerate a missing or empty config by using an empty in-m
 
 Manual layout behavior remains runtime-only in the daemon/control protocol. The GUI canvas edits the selected saved profile layout draft when a profile exists; with no profiles configured, it edits and applies a live manual-layout draft (position, mode, scale, and rotation, through `ManualOutputPlacement`) without changing saved TOML.
 
-Profile selection is deterministic: manual profile if enabled and matching, otherwise enabled matching profile by priority, specificity, then config order.
+Profile selection is deterministic: manual profile if enabled and matching, otherwise enabled matching profile by priority, specificity, then config order. A profile matches only when every output entry's `match` matches a connected output and its `condition` holds; output matchers count as required monitors for specificity. The GUI does not copy output matchers into `all_connected`.
 
 Config structs use `#[serde(deny_unknown_fields)]`, so a misspelled key is a load error. The saved TOML layout comes from `config_to_toml` in `src/config.rs` and is pinned by a golden test. GUI saves do not keep comments.
 

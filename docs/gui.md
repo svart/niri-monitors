@@ -76,7 +76,7 @@ Each monitor tile shows the connector, the make and model, and its logical size,
 - Profile edits are made in memory first. `Unsaved changes` appears next to `Save` until you save.
 - Saving rewrites the whole config file, so comments and hand formatting in it are lost. Saving an existing config first writes `config.toml.bak` next to the config file, which keeps them.
 - After a successful save, the GUI asks a running daemon to reload the saved config.
-- `+ New profile` creates a profile from live outputs when available: all connected outputs become `all_connected` matchers, output settings copy current niri state, and priority is one higher than the current maximum.
+- `+ New profile` creates a profile from live outputs when available: each connected output becomes an output entry with the current niri settings, and priority is one higher than the current maximum. The profile matches while all of those outputs are connected. It has no condition.
 - Deleting a profile asks for confirmation in a dialog.
 - Results such as `Saved` or `Applying failed` appear as toasts in the bottom-right corner. Click a toast to dismiss it.
 - Config load and validation errors appear in a red banner under the header. Save stays disabled until the config is valid.

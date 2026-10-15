@@ -1,4 +1,4 @@
-use crate::model::{Config, MonitorMatcher, Profile, ProfileCondition};
+use crate::model::{Config, MonitorMatcher, Profile};
 use crate::niri::output::NiriOutput;
 
 pub fn matcher_matches_output(matcher: &MonitorMatcher, output: &NiriOutput) -> bool {
@@ -15,10 +15,14 @@ pub fn matcher_matches_any_output(matcher: &MonitorMatcher, outputs: &[NiriOutpu
         .any(|output| matcher_matches_output(matcher, output))
 }
 
-pub fn condition_matches_outputs(condition: &ProfileCondition, outputs: &[NiriOutput]) -> bool {
-    condition
-        .all_connected
-        .iter()
+/// Whether the profile applies to the connected outputs. Every `all_connected` matcher
+/// and every output entry's `match` must match a connected output, at least one
+/// `any_connected` matcher must match when there are any, and no `none_connected`
+/// matcher may match.
+pub fn profile_matches_outputs(profile: &Profile, outputs: &[NiriOutput]) -> bool {
+    let condition = &profile.condition;
+    required_matchers(profile)
+        .into_iter()
         .all(|matcher| matcher_matches_any_output(matcher, outputs))
         && (condition.any_connected.is_empty()
             || condition
@@ -31,8 +35,21 @@ pub fn condition_matches_outputs(condition: &ProfileCondition, outputs: &[NiriOu
             .all(|matcher| !matcher_matches_any_output(matcher, outputs))
 }
 
-pub fn profile_matches_outputs(profile: &Profile, outputs: &[NiriOutput]) -> bool {
-    condition_matches_outputs(&profile.condition, outputs)
+/// The condition's `all_connected` matchers followed by the output entries' matchers,
+/// without duplicates.
+fn required_matchers(profile: &Profile) -> Vec<&MonitorMatcher> {
+    let mut required = Vec::new();
+    for matcher in profile
+        .condition
+        .all_connected
+        .iter()
+        .chain(profile.outputs.iter().map(|output| &output.matcher))
+    {
+        if !required.contains(&matcher) {
+            required.push(matcher);
+        }
+    }
+    required
 }
 
 pub fn select_profile<'a>(
@@ -56,7 +73,7 @@ pub fn select_profile<'a>(
             continue;
         }
 
-        let specificity = specificity_score(&profile.condition);
+        let specificity = specificity_score(profile);
         if best
             .as_ref()
             .is_none_or(|(best_profile, best_specificity)| {
@@ -72,15 +89,18 @@ pub fn select_profile<'a>(
     best.map(|(profile, _)| profile)
 }
 
-pub fn specificity_score(condition: &ProfileCondition) -> i32 {
-    matcher_group_score(&condition.all_connected, 10)
-        + matcher_group_score(&condition.any_connected, 3)
-        + matcher_group_score(&condition.none_connected, 2)
+pub fn specificity_score(profile: &Profile) -> i32 {
+    matcher_group_score(required_matchers(profile), 10)
+        + matcher_group_score(&profile.condition.any_connected, 3)
+        + matcher_group_score(&profile.condition.none_connected, 2)
 }
 
-fn matcher_group_score(matchers: &[MonitorMatcher], base_score: i32) -> i32 {
+fn matcher_group_score<'a>(
+    matchers: impl IntoIterator<Item = &'a MonitorMatcher>,
+    base_score: i32,
+) -> i32 {
     matchers
-        .iter()
+        .into_iter()
         .map(|matcher| base_score + matcher_field_count(matcher))
         .sum()
 }
@@ -110,7 +130,7 @@ fn serial_matches(expected: Option<&str>, actual: Option<&str>) -> bool {
 mod tests {
     use super::*;
     use crate::model::Transform;
-    use crate::model::{DaemonConfig, ProfileCondition};
+    use crate::model::{DaemonConfig, ProfileCondition, ProfileOutput};
     use crate::niri::output::{LogicalOutput, NiriMode};
 
     #[test]
@@ -197,6 +217,66 @@ mod tests {
         let selected = select_profile(&tied_config, &outputs, None).expect("profile should match");
 
         assert_eq!(selected.id, "first");
+    }
+
+    #[test]
+    fn profile_requires_its_output_entries_to_be_connected() {
+        let dell = output("DP-1", "Dell Inc.", "DELL U3419W", Some("7VK66T2"));
+        let lenovo = output("HDMI-A-1", "Lenovo", "T27", None);
+        let mut home = profile("home", 0, ProfileCondition::default());
+        home.outputs = vec![output_entry("Dell Inc. DELL U3419W 7VK66T2")];
+
+        assert!(profile_matches_outputs(
+            &home,
+            &[dell.clone(), lenovo.clone()]
+        ));
+        assert!(!profile_matches_outputs(&home, &[lenovo]));
+
+        home.condition.none_connected = vec![matcher_description("Dell Inc. DELL U3419W 7VK66T2")];
+        assert!(!profile_matches_outputs(&home, &[dell]));
+    }
+
+    #[test]
+    fn output_entries_count_toward_specificity_once() {
+        let outputs = vec![output("DP-1", "Dell Inc.", "DELL U3419W", Some("7VK66T2"))];
+        let mut duplicated = profile(
+            "duplicated",
+            0,
+            ProfileCondition {
+                all_connected: vec![matcher_description("Dell Inc. DELL U3419W 7VK66T2")],
+                ..ProfileCondition::default()
+            },
+        );
+        duplicated.outputs = vec![output_entry("Dell Inc. DELL U3419W 7VK66T2")];
+        let mut implicit = profile("implicit", 0, ProfileCondition::default());
+        implicit.outputs = vec![output_entry("Dell Inc. DELL U3419W 7VK66T2")];
+
+        assert_eq!(specificity_score(&duplicated), specificity_score(&implicit));
+        assert!(specificity_score(&implicit) > 0);
+
+        let config = Config {
+            version: 1,
+            daemon: DaemonConfig::default(),
+            profiles: vec![
+                profile("fallback", 0, ProfileCondition::default()),
+                implicit,
+            ],
+        };
+        let selected = select_profile(&config, &outputs, None).expect("profile should match");
+
+        assert_eq!(selected.id, "implicit");
+    }
+
+    fn output_entry(description: &str) -> ProfileOutput {
+        ProfileOutput {
+            matcher: matcher_description(description),
+            enabled: Some(true),
+            mode: None,
+            scale: None,
+            transform: None,
+            position: None,
+            vrr: None,
+        }
     }
 
     fn profile(id: &str, priority: i32, condition: ProfileCondition) -> Profile {

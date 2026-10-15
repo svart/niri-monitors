@@ -62,7 +62,7 @@ On startup and after detected output changes, the daemon:
 - Reads connected outputs from niri JSON IPC.
 - Skips automatic profile selection if a manual layout is active and automatic loading is disabled.
 - Selects the manual profile if one is set, enabled, and still matches connected outputs.
-- Otherwise selects the enabled matching profile with the highest priority, then highest condition specificity, then config order.
+- Otherwise selects the enabled matching profile with the highest priority, then highest specificity (see `docs/config.md`), then config order.
 - Builds an apply plan and refuses unsafe plans such as enabled outputs that overlap after the plan or disabling every connected output when `prevent_disable_all = true`. See `docs/config.md` for how the resulting layout is checked.
 - Plans only the settings that differ from the current output state. If the outputs already match the profile, the plan is empty and nothing is sent to niri.
 - Applies the plan unless `--dry-run` or automatic loading is disabled, then reads the outputs from niri again.

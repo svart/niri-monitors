@@ -45,12 +45,6 @@ name = "Home"
 priority = 100
 enabled = true
 
-[profiles.condition]
-all_connected = [
-  { description = "Dell Inc. DELL U3419W 7VK66T2" },
-]
-none_connected = []
-
 [[profiles.outputs]]
 match = { description = "Dell Inc. DELL U3419W 7VK66T2" }
 enabled = true
@@ -60,6 +54,8 @@ transform = "normal"
 position = { x = 0, y = 0 }
 vrr = false
 ```
+
+This profile matches whenever the Dell monitor is connected, because every output entry's `match` must match a connected output. Add a `[profiles.condition]` only for other rules; see [Conditions](#conditions).
 
 Prefer creating profiles in `niri-monitors-gui` because it can populate connected output descriptions and current settings from niri, with daemon status as a fallback. To inspect raw niri output data yourself, use:
 
@@ -90,22 +86,23 @@ Profiles are declared with `[[profiles]]`. The list is optional; an empty list m
 | `name` | string | required | Human-readable profile name shown by the GUI and daemon status. |
 | `priority` | integer | `0` | Higher priority wins when multiple profiles match. |
 | `enabled` | boolean | `true` | Disabled profiles are ignored. |
-| `condition` | table | empty | Match rules for automatic profile selection. |
-| `outputs` | array | empty | Output settings to apply when this profile is selected. |
+| `condition` | table | empty | Extra match rules for automatic profile selection. The output entries are already required. |
+| `outputs` | array | empty | Output settings to apply when this profile is selected. The profile matches only when every entry's monitor is connected. |
 
 Profile selection behavior:
 
+- A profile matches when every output entry's `match` matches a connected output and its `condition` holds.
 - A manual layout applied through the control socket pauses automatic profile selection until automatic loading is enabled again.
 - A manual profile requested through the control socket wins only if it is enabled and still matches connected outputs.
 - Otherwise the daemon picks the enabled matching profile with the highest `priority`.
-- Priority ties are broken by condition specificity.
+- Priority ties are broken by specificity.
 - Exact ties keep config order.
 
-Condition specificity is computed from matcher groups in `src/matching.rs`: `all_connected` contributes the most, then `any_connected`, then `none_connected`; matchers with more filled fields are more specific.
+Specificity is computed from matcher groups in `src/matching.rs`. Required monitors contribute the most: the `all_connected` matchers and the output entries' `match` matchers, with each distinct matcher counted once. Then come `any_connected`, then `none_connected`. Matchers with more filled fields are more specific.
 
 ## Conditions
 
-Conditions live under `[profiles.condition]` and contain matcher arrays.
+Conditions live under `[profiles.condition]` and contain matcher arrays. They add to the rule that every output entry's monitor is connected, so most profiles need no condition.
 
 ```toml
 [profiles.condition]
@@ -123,10 +120,13 @@ none_connected = [
 
 Condition semantics:
 
-- `all_connected`: every matcher must match at least one connected output.
+- `all_connected`: every matcher must match at least one connected output. Use it for a monitor that must be connected but has no output entry. Repeating an output entry's `match` here has no effect.
 - `any_connected`: at least one matcher must match; an empty array is ignored.
 - `none_connected`: every matcher must match no connected output.
-- An empty condition matches any output state, which is useful for a low-priority fallback profile.
+- Output entries are required even when they set `enabled = false`: a profile that turns a monitor off matches only while that monitor is connected.
+- A profile with no condition and no output entries matches any output state, which is useful for a low-priority fallback profile.
+
+Empty arrays and an empty `[profiles.condition]` can be left out. The GUI does not write them.
 
 ## Monitor Matchers
 
@@ -159,7 +159,7 @@ position = { x = 0, y = 0 }
 vrr = false
 ```
 
-`match` is required and must contain a non-empty monitor matcher. At apply time, it should resolve to exactly one connected output. If it matches no output, the daemon skips that output entry and reports a warning. If it matches multiple outputs, planning fails.
+`match` is required and must contain a non-empty monitor matcher. At apply time, it must resolve to exactly one connected output. A profile matches only when every entry's `match` matches a connected output, so a selected or activated profile has no unmatched entries. A preview of a profile that does not match skips entries that match no output and reports a warning. If a `match` matches multiple outputs, planning fails.
 
 All other output fields are optional:
 

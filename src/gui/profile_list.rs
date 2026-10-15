@@ -9,11 +9,7 @@ pub fn build_new_profile(existing: &[Profile], connected_outputs: &[NiriOutput])
         name,
         priority: next_profile_priority(existing),
         enabled: true,
-        condition: ProfileCondition {
-            all_connected: connected_outputs.iter().map(matcher_from_output).collect(),
-            any_connected: Vec::new(),
-            none_connected: Vec::new(),
-        },
+        condition: ProfileCondition::default(),
         outputs: connected_outputs
             .iter()
             .map(profile_output_from_output)
@@ -145,7 +141,7 @@ mod tests {
         assert_eq!(profile.id, "profile-2");
         assert_eq!(profile.name, "Profile 2");
         assert_eq!(profile.priority, 5);
-        assert_eq!(profile.condition.all_connected.len(), 1);
+        assert!(profile.condition.is_empty());
         assert_eq!(profile.outputs.len(), 1);
         assert_eq!(
             profile.outputs[0]
