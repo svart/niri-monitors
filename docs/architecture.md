@@ -74,7 +74,7 @@ The GUI is an eframe/egui app (`src/gui/app.rs`). The UI thread never blocks on 
 - `Poller` (`src/gui/poller.rs`) runs each fetch on a background thread. The GUI polls daemon status and live niri outputs once per second each.
 - `DaemonClient` (`src/gui/daemon_client.rs`) sends control requests with a 750 ms timeout.
 
-The GUI edits a draft copy of the config. With profiles, the canvas and inspector edit the selected profile's outputs; `Save` validates the draft, writes `config.toml.bak`, rewrites `config.toml`, and asks the daemon to reload. With no profiles, the canvas edits a runtime-only live layout, which `Apply` sends through the daemon (`apply_manual_layout`) or, when the daemon is offline, directly to niri.
+The GUI edits a draft copy of the config. With profiles, the canvas and inspector edit the selected profile's outputs. `Apply` sends the selected profile draft through the daemon (`apply_profile_draft`) or, when the daemon is offline, directly to niri. `Save` validates the draft, writes `config.toml.bak`, rewrites `config.toml`, and asks the daemon to reload. With no profiles, the canvas edits a runtime-only live layout, which `Apply` sends through the daemon (`apply_manual_layout`) or, when the daemon is offline, directly to niri.
 
 ## Source Layout
 

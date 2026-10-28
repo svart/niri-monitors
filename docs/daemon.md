@@ -81,6 +81,7 @@ Requests use a `type` field with snake_case names:
 | `preview_profile` | `profile: string` (profile name) | Build a plan for a saved profile and return actions, warnings, and dry-run text without applying. |
 | `dry_run_profile` | `profile: string` (profile name) | Same response and behavior as `preview_profile`. |
 | `apply_manual_layout` | `placements: array` | Move connected enabled outputs and optionally change their mode, scale, and rotation, normalize the layout to top-left `0,0`, and switch to manual layout mode. |
+| `apply_profile_draft` | `profile: object` (a profile, as in the config file) | Apply a profile that does not have to be saved, such as the GUI's unsaved draft, and switch to manual layout mode. The saved config does not change. |
 
 Example requests:
 
@@ -90,6 +91,10 @@ Example requests:
 
 ```json
 {"type":"activate_profile","profile":"Home"}
+```
+
+```json
+{"type":"apply_profile_draft","profile":{"name":"Home","outputs":[{"match":{"connector":"DP-1"},"scale":1.25}]}}
 ```
 
 ```json
@@ -140,9 +145,11 @@ Mode changes:
 - `set_auto_mode` with `enabled: true` and `clear_manual_profile` both switch to automatic, then reconcile.
 - `set_auto_mode` with `enabled: false` switches automatic to paused. A manual profile or manual layout stays active.
 - `activate_profile` switches to manual profile, then reconciles and applies the profile even though automatic loading is paused.
-- `apply_manual_layout` switches to manual layout.
+- `apply_manual_layout` and `apply_profile_draft` switch to manual layout.
 
 `apply_manual_layout` supports ad-hoc runtime layouts through the control socket. Each placement has an `output` connector and a `position`. It can also have a `mode`, `scale`, and `transform`, written as in the config file (see [config.md](config.md#output-settings)). A setting that is left out keeps its current value. The daemon rejects these with `BAD_REQUEST`: empty placement lists, duplicate outputs, disconnected outputs, disabled outputs, modes the output does not offer, and scales that are not finite and greater than zero. It then applies mode, scale, rotation, and position actions, in that order. It does not change VRR. A setting that already matches gets no action; a scale within niri's rounding counts as a match. The overlap check uses the size an output has after its new mode, scale, and rotation. If a placement changes the mode but not the scale, niri can pick a new automatic scale, so the size after the apply can differ. Before applying, the daemon normalizes enabled output positions into one enclosing rectangle whose top-left coordinate is `0,0`, so outputs without a placement can move too. Outputs already at their final position get no action. Layouts with positive-area output overlap are rejected with `LAYOUT_OVERLAPS`; edge-touching output borders are allowed. A rejected layout does not change the daemon mode.
+
+`apply_profile_draft` builds the same plan as for a saved profile, with the same safety checks against the saved `[daemon]` settings, and does not check the profile's `enabled` flag, priority, or condition. Plan errors return `PLAN_FAILED` or `LAYOUT_OVERLAPS` and do not change the daemon mode. The result is recorded in `last_apply` under the draft's name.
 
 ## Troubleshooting
 

@@ -1,7 +1,7 @@
 use crate::config::{ConfigError, load_config};
 use crate::daemon::{
-    DaemonError, DaemonState, LastApply, Mode, apply_manual_layout, reconcile_once,
-    reconcile_outputs_for_manual_apply,
+    DaemonError, DaemonState, LastApply, Mode, apply_manual_layout, apply_profile_draft,
+    reconcile_once, reconcile_outputs_for_manual_apply,
 };
 use crate::matching::profile_matches_outputs;
 use crate::model::{ManualOutputPlacement, Profile};
@@ -35,6 +35,10 @@ pub enum ControlRequest {
     },
     ApplyManualLayout {
         placements: Vec<ManualOutputPlacement>,
+    },
+    /// Applies a profile sent in the request, such as an unsaved GUI draft.
+    ApplyProfileDraft {
+        profile: Profile,
     },
     ClearManualProfile,
     PreviewProfile {
@@ -184,6 +188,12 @@ pub fn handle_control_request(
         ControlRequest::ActivateProfile { profile } => activate_profile(state, client, profile),
         ControlRequest::ApplyManualLayout { placements } => {
             match apply_manual_layout(client, state, &placements) {
+                Ok(()) => ControlResponse::ok(status_data(state)),
+                Err(error) => error_from_daemon(error),
+            }
+        }
+        ControlRequest::ApplyProfileDraft { profile } => {
+            match apply_profile_draft(client, state, &profile) {
                 Ok(()) => ControlResponse::ok(status_data(state)),
                 Err(error) => error_from_daemon(error),
             }
@@ -632,6 +642,64 @@ mod tests {
 
         assert!(!response.ok);
         assert_eq!(response.error.unwrap().code, ErrorCode::LayoutOverlaps);
+        assert!(client.actions.is_empty());
+        assert_eq!(state.mode, Mode::Auto);
+    }
+
+    #[test]
+    fn profile_draft_request_carries_the_profile() {
+        let request: ControlRequest = serde_json::from_str(
+            r#"{"type":"apply_profile_draft","profile":{"name":"home","outputs":[{"match":{"connector":"DP-1"},"scale":1.25}]}}"#,
+        )
+        .unwrap();
+
+        let ControlRequest::ApplyProfileDraft { profile } = request else {
+            panic!("expected apply_profile_draft");
+        };
+        assert_eq!(profile.name, "home");
+        assert_eq!(profile.outputs[0].scale, Some(1.25));
+    }
+
+    #[test]
+    fn profile_draft_is_applied_without_changing_the_config() {
+        let config = config("home");
+        let mut draft = config.profiles[0].clone();
+        draft.outputs[0].scale = Some(1.25);
+        let mut state = DaemonState::new(config.clone());
+        let mut client = FakeClient::new(vec![output("DP-1")]);
+
+        let response = handle_control_request(
+            ControlRequest::ApplyProfileDraft { profile: draft },
+            &mut state,
+            &mut client,
+            Path::new("unused.toml"),
+        );
+
+        assert!(response.ok);
+        assert_eq!(state.mode, Mode::ManualLayout);
+        assert_eq!(state.config, config);
+        assert_eq!(
+            client.actions,
+            vec![("DP-1".to_string(), OutputAction::Scale(1.25))]
+        );
+        assert_eq!(state.last_apply.unwrap().profile, "home");
+    }
+
+    #[test]
+    fn profile_draft_that_cannot_be_planned_changes_nothing() {
+        let mut draft = config("home").profiles[0].clone();
+        draft.outputs[0].mode = Some("640x480@60".parse().unwrap());
+        let mut state = DaemonState::new(config("home"));
+        let mut client = FakeClient::new(vec![output("DP-1")]);
+
+        let response = handle_control_request(
+            ControlRequest::ApplyProfileDraft { profile: draft },
+            &mut state,
+            &mut client,
+            Path::new("unused.toml"),
+        );
+
+        assert_eq!(response.error.unwrap().code, ErrorCode::PlanFailed);
         assert!(client.actions.is_empty());
         assert_eq!(state.mode, Mode::Auto);
     }

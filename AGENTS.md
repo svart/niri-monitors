@@ -74,6 +74,8 @@ Daemon and GUI startup tolerate a missing or empty config by using an empty in-m
 
 Manual layout behavior remains runtime-only in the daemon/control protocol. The GUI canvas edits the selected saved profile layout draft when a profile exists; with no profiles configured, it edits and applies a live manual-layout draft (position, mode, scale, and rotation, through `ManualOutputPlacement`) without changing saved TOML.
 
+When the selected profile has unsaved changes, the GUI header shows `Apply` next to `Save`. `Apply` sends the draft profile through the `apply_profile_draft` control request (or directly to niri when the daemon is offline); the daemon enters manual layout mode so its poll loop does not re-apply the saved profile. `Save` does not apply: it writes the file and reloads the daemon, which restores the configured mode. Do not apply a draft directly through niri while the daemon runs: the next poll sees changed outputs and re-applies the saved selection.
+
 Profile selection is deterministic: manual profile if enabled and matching, otherwise enabled matching profile by priority, specificity, then config order. A profile matches only when every output entry's `match` matches a connected output and its `condition` holds; output matchers count as required monitors for specificity. The GUI does not copy output matchers into `all_connected`.
 
 Profiles are identified by `name`; there is no separate id. Names must be non-empty and unique after trimming. Control requests take a `profile` name, and status `selected_profile`, `manual_profile`, and `last_apply.profile` carry names. The GUI tracks the selected profile by index, so a rename does not move the selection.

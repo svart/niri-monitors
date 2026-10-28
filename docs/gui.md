@@ -56,8 +56,11 @@ Each monitor tile shows the connector, the make and model, and its logical size,
 ## Editing
 
 - Profile edits are made in memory first. `Unsaved changes` appears next to `Save` until you save.
+- When the selected profile has unsaved changes, `Apply` appears next to `Save`. `Apply` sends the edited profile to the monitors without writing the config file. It is disabled, with the reason on hover, when the monitors already match the profile or the profile cannot be applied (for example, overlapping monitors or a mode that a monitor does not offer).
+- `Save` (and `Ctrl`+`S`) only writes the config file; it does not apply the profile. Use `Apply` to see a change on the monitors.
 - Saving rewrites the whole config file, so comments and hand formatting in it are lost. Saving an existing config first writes `config.toml.bak` next to the config file, which keeps them.
-- After a successful save, the GUI asks a running daemon to reload the saved config.
+- With the daemon running, `Apply` goes through the daemon (`apply_profile_draft`), which switches it to manual layout mode so that it does not apply the saved profile over the draft. Without the daemon, the GUI sends the changes directly through niri IPC.
+- After a successful save, the GUI asks a running daemon to reload the saved config. This returns the daemon to its configured mode, which ends the manual layout mode that `Apply` started. In automatic mode the daemon then applies the best matching saved profile, as it does after any reload.
 - `+ New profile` creates a profile from live outputs when available: each connected output becomes an output entry with the current niri settings, and priority is one higher than the current maximum. The profile matches while all of those outputs are connected. It has no condition.
 - Deleting a profile asks for confirmation in a dialog.
 - Results such as `Saved` or `Applying failed` appear as toasts in the bottom-right corner. Click a toast to dismiss it.

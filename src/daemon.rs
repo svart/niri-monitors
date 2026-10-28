@@ -1,5 +1,5 @@
 use crate::matching::select_profile;
-use crate::model::{Config, ManualOutputPlacement};
+use crate::model::{Config, ManualOutputPlacement, Profile};
 use crate::niri::apply::{
     ApplyExecutionError, ApplyExecutionReport, ApplyPlan, ApplyPlanError, ManualLayoutError,
     build_apply_plan, build_manual_layout_plan, dry_run_apply_plan, execute_apply_plan,
@@ -268,6 +268,24 @@ pub fn apply_manual_layout(
 ) -> Result<(), DaemonError> {
     let outputs = client.outputs()?;
     let plan = build_manual_layout_plan(&outputs, placements)?;
+
+    state.mode = Mode::ManualLayout;
+    state.selected_profile = None;
+    state.outputs = outputs;
+    execute_and_record(client, state, &plan)?;
+    Ok(())
+}
+
+/// Applies `profile`, which does not have to be in the config, and switches to manual
+/// layout mode, so the saved profiles are not applied over it. A profile that cannot be
+/// planned changes nothing.
+pub fn apply_profile_draft(
+    client: &mut impl NiriClient,
+    state: &mut DaemonState,
+    profile: &Profile,
+) -> Result<(), DaemonError> {
+    let outputs = client.outputs()?;
+    let plan = build_apply_plan(&state.config, profile, &outputs)?;
 
     state.mode = Mode::ManualLayout;
     state.selected_profile = None;

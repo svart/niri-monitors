@@ -2,7 +2,7 @@ use crate::control::{
     ControlRequest, ControlResponse, ErrorCode, PreviewData, StatusData,
     default_control_socket_path,
 };
-use crate::model::ManualOutputPlacement;
+use crate::model::{ManualOutputPlacement, Profile};
 use serde::de::DeserializeOwned;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -83,6 +83,10 @@ impl DaemonClient {
         placements: Vec<ManualOutputPlacement>,
     ) -> Result<StatusData, DaemonClientError> {
         self.request(ControlRequest::ApplyManualLayout { placements })
+    }
+
+    pub fn apply_profile_draft(&self, profile: Profile) -> Result<StatusData, DaemonClientError> {
+        self.request(ControlRequest::ApplyProfileDraft { profile })
     }
 
     fn request<T>(&self, request: ControlRequest) -> Result<T, DaemonClientError>

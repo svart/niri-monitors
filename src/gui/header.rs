@@ -88,17 +88,21 @@ pub fn daemon_summary(state: &DaemonConnectionState) -> DaemonSummary {
 /// What the user did in the header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeaderAction {
+    Apply,
     Save,
     ToggleTheme,
 }
 
 /// Draws the header and returns what the user did.
+///
+/// `apply` is `None` to hide the Apply button, or why it is disabled.
 pub fn show_header(
     ui: &mut egui::Ui,
     daemon: &DaemonSummary,
     niri_error: Option<&str>,
     dirty: bool,
     can_save: bool,
+    apply: Option<Result<(), &str>>,
 ) -> Option<HeaderAction> {
     let palette = theme::palette(ui.ctx());
     let mut action = None;
@@ -125,6 +129,18 @@ pub fn show_header(
                 });
             if save.clicked() {
                 action = Some(HeaderAction::Save);
+            }
+            if let Some(apply) = apply {
+                let button = ui
+                    .add_enabled(apply.is_ok(), egui::Button::new("Apply"))
+                    .on_hover_text("Apply the profile to the monitors without saving it");
+                let button = match apply {
+                    Ok(()) => button,
+                    Err(reason) => button.on_disabled_hover_text(reason),
+                };
+                if button.clicked() {
+                    action = Some(HeaderAction::Apply);
+                }
             }
             if dirty {
                 ui.label(RichText::new("Unsaved changes").color(palette.warning));

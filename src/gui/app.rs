@@ -18,7 +18,7 @@ use crate::gui::theme;
 use crate::gui::toast::Toasts;
 use crate::matching::matcher_matches_output;
 use crate::model::{Config, ManualOutputPlacement, Profile};
-use crate::niri::apply::{build_manual_layout_plan, execute_apply_plan};
+use crate::niri::apply::{build_apply_plan, build_manual_layout_plan, execute_apply_plan};
 use crate::niri::ipc::{NiriClient, SocketNiriClient};
 use crate::niri::output::NiriOutput;
 use crate::placement::{derive_output_rects, first_overlap_message};
@@ -39,6 +39,15 @@ pub enum LiveOutputsState {
         message: String,
     },
     Available(Vec<NiriOutput>),
+}
+
+/// Whether the selected profile can be applied to the monitors now.
+#[derive(Debug, Clone, PartialEq)]
+enum ProfileApply {
+    Ready,
+    /// The monitors already match the profile.
+    UpToDate,
+    Blocked(String),
 }
 
 #[derive(Default)]
@@ -264,6 +273,62 @@ impl GuiApp {
         }
     }
 
+    /// How the selected profile can be applied, or `None` when it has no unsaved changes.
+    fn selected_profile_apply(&self) -> Option<ProfileApply> {
+        let profile = self.selected_profile()?;
+        if !profile_is_unsaved(profile, self.original_config.as_ref()) {
+            return None;
+        }
+        if self.validation_error.is_some() {
+            return Some(ProfileApply::Blocked(
+                "Fix the problem shown below the header first".to_owned(),
+            ));
+        }
+        let config = self.config.as_ref()?;
+        Some(profile_apply_state(
+            config,
+            profile,
+            self.connected_outputs(),
+        ))
+    }
+
+    fn apply_profile_draft(&mut self) {
+        match self.apply_selected_profile() {
+            Ok(()) if self.daemon_running() => self
+                .toasts
+                .success("Profile applied. Automatic profiles are paused until you save."),
+            Ok(()) => self.toasts.success("Profile applied through niri."),
+            Err(error) => self.toasts.error(format!("Applying failed: {error}")),
+        }
+    }
+
+    /// Applies the selected profile draft. A running daemon applies it, so the daemon does
+    /// not apply the saved profile over it at the next poll.
+    fn apply_selected_profile(&mut self) -> Result<(), String> {
+        let (Some(config), Some(profile)) = (self.config.clone(), self.selected_profile().cloned())
+        else {
+            return Ok(());
+        };
+
+        if self.daemon_running() {
+            let status = DaemonClient::from_default_socket()
+                .and_then(|client| client.apply_profile_draft(profile))
+                .map_err(|error| error.to_string())?;
+            self.live_outputs = LiveOutputsState::Available(status.outputs.clone());
+            self.daemon = DaemonConnectionState::Running(status);
+            return Ok(());
+        }
+
+        let mut client = SocketNiriClient::from_env().map_err(|error| error.to_string())?;
+        let outputs = client.outputs().map_err(|error| error.to_string())?;
+        let plan =
+            build_apply_plan(&config, &profile, &outputs).map_err(|error| error.to_string())?;
+        execute_apply_plan(&mut client, &plan).map_err(|error| error.to_string())?;
+        let outputs = client.outputs().map_err(|error| error.to_string())?;
+        self.live_outputs = LiveOutputsState::Available(outputs);
+        Ok(())
+    }
+
     /// Replaces the draft with what niri reports after an apply. niri may pick a new
     /// automatic scale for a new mode, so the result can differ from the draft.
     fn show_applied_layout(&mut self, outputs: &[NiriOutput]) {
@@ -420,13 +485,21 @@ impl GuiApp {
 
     fn show_header(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let summary = daemon_summary(&self.daemon);
+        let profile_apply = self.selected_profile_apply();
+        let apply = profile_apply.as_ref().map(|state| match state {
+            ProfileApply::Ready => Ok(()),
+            ProfileApply::UpToDate => Err("The monitors already match this profile"),
+            ProfileApply::Blocked(reason) => Err(reason.as_str()),
+        });
         match show_header(
             ui,
             &summary,
             self.niri_error(),
             self.is_dirty(),
             self.can_save(),
+            apply,
         ) {
+            Some(HeaderAction::Apply) => self.apply_profile_draft(),
             Some(HeaderAction::Save) => self.save_draft(),
             Some(HeaderAction::ToggleTheme) => {
                 let theme = theme::opposite(ui.ctx().theme());
@@ -775,6 +848,22 @@ fn fetch_live_outputs() -> LiveOutputsState {
     }
 }
 
+/// Whether `profile` differs from every profile in the saved config.
+fn profile_is_unsaved(profile: &Profile, saved: Option<&Config>) -> bool {
+    saved.is_none_or(|saved| !saved.profiles.contains(profile))
+}
+
+fn profile_apply_state(config: &Config, profile: &Profile, outputs: &[NiriOutput]) -> ProfileApply {
+    if outputs.is_empty() {
+        return ProfileApply::Blocked("No connected monitors are known".to_owned());
+    }
+    match build_apply_plan(config, profile, outputs) {
+        Ok(plan) if plan.actions.is_empty() => ProfileApply::UpToDate,
+        Ok(_) => ProfileApply::Ready,
+        Err(error) => ProfileApply::Blocked(error.to_string()),
+    }
+}
+
 fn configs_are_dirty(config: Option<&Config>, original_config: Option<&Config>) -> bool {
     match (config, original_config) {
         (Some(config), Some(original_config)) => config != original_config,
@@ -786,6 +875,8 @@ fn configs_are_dirty(config: Option<&Config>, original_config: Option<&Config>) 
 mod tests {
     use super::*;
     use crate::config::empty_config;
+    use crate::model::{MonitorMatcher, ProfileOutput, Transform};
+    use crate::niri::output::{LogicalOutput, NiriMode};
 
     #[test]
     fn unchanged_config_is_not_dirty() {
@@ -815,6 +906,50 @@ mod tests {
     #[test]
     fn missing_config_is_not_dirty() {
         assert!(!configs_are_dirty(None, None));
+    }
+
+    #[test]
+    fn edited_or_renamed_profile_is_unsaved() {
+        let mut saved = empty_config();
+        saved.profiles.push(profile(1.0));
+        let mut renamed = profile(1.0);
+        renamed.name = "Desk".to_owned();
+
+        assert!(!profile_is_unsaved(&profile(1.0), Some(&saved)));
+        assert!(profile_is_unsaved(&profile(1.5), Some(&saved)));
+        assert!(profile_is_unsaved(&renamed, Some(&saved)));
+    }
+
+    #[test]
+    fn profile_can_be_applied_only_when_it_changes_the_monitors() {
+        let config = empty_config();
+        let outputs = [output()];
+
+        assert_eq!(
+            profile_apply_state(&config, &profile(1.5), &outputs),
+            ProfileApply::Ready
+        );
+        assert_eq!(
+            profile_apply_state(&config, &profile(1.0), &outputs),
+            ProfileApply::UpToDate
+        );
+        assert!(matches!(
+            profile_apply_state(&config, &profile(1.5), &[]),
+            ProfileApply::Blocked(_)
+        ));
+    }
+
+    #[test]
+    fn profile_that_cannot_be_planned_is_blocked_with_the_reason() {
+        let mut unavailable_mode = profile(1.0);
+        unavailable_mode.outputs[0].mode = Some("640x480@60".parse().unwrap());
+
+        let ProfileApply::Blocked(reason) =
+            profile_apply_state(&empty_config(), &unavailable_mode, &[output()])
+        else {
+            panic!("expected a blocked apply");
+        };
+        assert!(reason.contains("640x480"));
     }
 
     #[test]
@@ -850,6 +985,54 @@ mod tests {
 
         std::fs::remove_dir_all(path.parent().expect("temp path should have parent"))
             .expect("temp directory should be removed");
+    }
+
+    fn profile(scale: f64) -> Profile {
+        Profile {
+            name: "Home".to_owned(),
+            priority: 0,
+            enabled: true,
+            condition: Default::default(),
+            outputs: vec![ProfileOutput {
+                matcher: MonitorMatcher {
+                    connector: Some("DP-1".to_owned()),
+                    ..MonitorMatcher::default()
+                },
+                enabled: Some(true),
+                mode: None,
+                scale: Some(scale),
+                transform: None,
+                position: None,
+                vrr: None,
+            }],
+        }
+    }
+
+    fn output() -> NiriOutput {
+        NiriOutput {
+            connector: "DP-1".to_owned(),
+            make: "Dell Inc.".to_owned(),
+            model: "DELL U3419W".to_owned(),
+            serial: None,
+            description: "Dell Inc. DELL U3419W".to_owned(),
+            modes: vec![NiriMode {
+                width: 3440,
+                height: 1440,
+                refresh_millihz: 59973,
+                is_preferred: true,
+            }],
+            current_mode: Some(0),
+            logical: Some(LogicalOutput {
+                x: 0,
+                y: 0,
+                width: 3440,
+                height: 1440,
+                scale: 1.0,
+                transform: Transform::Normal,
+            }),
+            vrr_supported: false,
+            vrr_enabled: false,
+        }
     }
 
     fn temp_config_path(test_name: &str) -> PathBuf {
